@@ -234,6 +234,7 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
         let mut trail = VecDeque::<DragSample>::new();
         let mut flight: Option<FlightState> = None;
         let mut last_frame = Instant::now();
+        let mut last_monitor_check = Instant::now();
         let mut last_hit_inside = false;
 
         loop {
@@ -369,6 +370,29 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
                     let at_floor = (body.y - floor_y).abs() < 1.0;
                     if at_floor && body.vy.abs() < 1.0 && body.vx.abs() < 15.0 {
                         flight = None;
+                    }
+                }
+                if flight.is_none() && now.duration_since(last_monitor_check).as_millis() >= 750 {
+                    last_monitor_check = now;
+                    let screens = monitor_rects(&window);
+                    let scale = window.scale_factor().unwrap_or(1.0);
+                    let origin = window.outer_position().unwrap_or(tauri::PhysicalPosition::new(0, 0));
+                    let left_offset = bounds.left * scale;
+                    let top_offset = bounds.top * scale;
+                    let right_offset = bounds.right * scale;
+                    let bottom_offset = bounds.bottom * scale;
+                    let center_x = origin.x as f64 + (left_offset + right_offset) / 2.0;
+                    let center_y = origin.y as f64 + (top_offset + bottom_offset) / 2.0;
+                    if !screens.iter().any(|screen| screen.contains(center_x, center_y)) {
+                        if let Some(screen) = nearest_screen(&screens, center_x, center_y) {
+                            let min_x = screen.x - left_offset;
+                            let max_x = screen.right() - right_offset;
+                            let min_y = screen.y - top_offset;
+                            let max_y = screen.bottom() - bottom_offset;
+                            let x = (origin.x as f64).clamp(min_x, max_x);
+                            let y = (origin.y as f64).clamp(min_y, max_y);
+                            let _ = window.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+                        }
                     }
                 }
                 if inside != last_hit_inside {
