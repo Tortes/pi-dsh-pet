@@ -13,19 +13,21 @@
       {
         "label": "main",
         "title": "Pi Desktop Pet",
-        "width": 1920,
-        "height": 1080,
+        "width": 640,
+        "height": 420,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "focusable": false,
         "resizable": false,
         "skipTaskbar": true,
-        "visible": true
+        "visible": false
       }
     ],
     "security": {
-      "capabilities": ["default"]
+      "capabilities": [
+        "default"
+      ]
     }
   },
   "bundle": {
