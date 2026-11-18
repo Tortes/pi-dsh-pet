@@ -87,6 +87,11 @@ function play(name, loop = false) {
   if (name === current && video.src && video.loop === loop) return;
   current = name;
   video.onended = null;
+  video.onerror = () => {
+    console.warn('[pi-dsh-pet] animation asset failed:', name);
+    const idle = config?.animations?.idle;
+    if (Array.isArray(idle) && idle.length && !idle.includes(name)) play(pick(idle), true);
+  };
   video.loop = loop;
   video.src = animationUrl(name);
   if (!loop) {
@@ -136,7 +141,7 @@ function handleMessage(raw) {
 }
 
 let lastBounds = '';
-function syncBounds() {
+async function syncBounds() {
   const rect = pet.getBoundingClientRect();
   const bounds = JSON.stringify({
     left: rect.left,
@@ -146,12 +151,12 @@ function syncBounds() {
   });
   if (bounds === lastBounds) return;
   lastBounds = bounds;
-  invoke('set_pet_bounds', {
+  await invoke('set_pet_bounds', {
     left: rect.left,
     top: rect.top,
     right: rect.right,
     bottom: rect.bottom,
-  }).catch(() => {});
+  });
 }
 
 function connect() {
@@ -203,8 +208,8 @@ function connect() {
 
 try {
   await loadConfig();
-  syncBounds();
-  setInterval(syncBounds, 250);
+  await syncBounds();
+  setInterval(() => { void syncBounds(); }, 250);
   connect();
   await invoke('show_pet');
 } catch (error) {
