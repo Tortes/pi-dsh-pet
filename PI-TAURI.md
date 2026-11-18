@@ -37,7 +37,7 @@ The GitHub Actions workflow uploads both the standalone runtime executable and t
     /pet
     /pet small
     /pet large
-    /pet status
+    /pet-status
     /pet-stop
 
 ## Current MVP boundaries
