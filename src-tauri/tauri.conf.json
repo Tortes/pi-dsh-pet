@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Pi Desktop Pet",
+  "version": "0.1.0",
+  "identifier": "cloud.pc2005.pi-dsh-pet",
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "frontendDist": "../pi/tauri"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Pi Desktop Pet",
+        "width": 1920,
+        "height": 1080,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "focusable": false,
+        "resizable": false,
+        "skipTaskbar": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "capabilities": ["default"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "nsis"
+  }
+}
