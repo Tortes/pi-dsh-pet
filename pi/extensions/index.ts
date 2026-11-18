@@ -131,8 +131,14 @@ async function startServer(): Promise<number> {
 }
 
 function findPetExecutable(): string {
-  return process.env.PI_DSH_PET_BIN ??
-    join(PACKAGE_ROOT, 'pi', 'bin', process.platform === 'win32' ? 'pet.exe' : 'pet');
+  if (process.env.PI_DSH_PET_BIN) return process.env.PI_DSH_PET_BIN;
+  const binary = process.platform === 'win32' ? 'pi-dsh-pet.exe' : 'pi-dsh-pet';
+  const candidates = [
+    join(PACKAGE_ROOT, 'pi', 'bin', binary),
+    join(PACKAGE_ROOT, 'src-tauri', 'target', 'release', binary),
+    join(PACKAGE_ROOT, 'src-tauri', 'target', 'debug', binary),
+  ];
+  return candidates[0];
 }
 
 function launchPet(size: string): void {
