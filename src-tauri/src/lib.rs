@@ -365,10 +365,8 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
                     }
 
                     let _ = window.set_position(tauri::PhysicalPosition::new(body.x.round() as i32, body.y.round() as i32));
-                    let at_floor = screens.iter().any(|screen| {
-                        let max_y = screen.bottom() - bottom_offset;
-                        (body.y - max_y).abs() < 1.0
-                    });
+                    let floor_y = body.screen.bottom() - bottom_offset;
+                    let at_floor = (body.y - floor_y).abs() < 1.0;
                     if at_floor && body.vy.abs() < 1.0 && body.vx.abs() < 15.0 {
                         flight = None;
                     }
