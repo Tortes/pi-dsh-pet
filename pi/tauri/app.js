@@ -74,6 +74,7 @@ async function loadConfig() {
       groundFriction: Number(physics.groundFriction ?? 2.5),
       ceilingBounce: physics.ceilingBounce !== false,
       throwPower: Number(physics.throwPower ?? 1),
+      dragSpring: physics.dragSpring !== false,
     },
   });
   play(pick(idle), true);
