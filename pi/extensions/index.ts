@@ -2,6 +2,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import { stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createReadStream } from 'node:fs';
 import { dirname, join, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -138,7 +139,7 @@ function findPetExecutable(): string {
     join(PACKAGE_ROOT, 'src-tauri', 'target', 'release', binary),
     join(PACKAGE_ROOT, 'src-tauri', 'target', 'debug', binary),
   ];
-  return candidates[0];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 
 function launchPet(size: string): void {
