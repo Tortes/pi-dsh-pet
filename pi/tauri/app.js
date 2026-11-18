@@ -75,10 +75,12 @@ function handleMessage(raw) {
   } else if (raw.startsWith('{')) {
     try {
       const event = JSON.parse(raw);
-      if (event.type === 'tool_call') {
+      if (event.type === 'tool_start') {
         animation = /bash|shell|exec|python|terminal/i.test(event.tool || '')
           ? '写代码'
           : '轻快记录';
+      } else if (event.type === 'tool_end') {
+        animation = event.error ? '死掉了' : '轻快记录';
       }
     } catch (error) {
       console.warn('[pi-dsh-pet] invalid event:', error);
