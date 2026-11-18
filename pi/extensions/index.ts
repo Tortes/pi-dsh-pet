@@ -196,6 +196,22 @@ function broadcastStatus(state: 'thinking' | 'working' | 'result' | 'waiting' | 
   broadcast?.(JSON.stringify({ type: 'work_status', state }));
 }
 
+function forceKillRuntime(child: ChildProcess): void {
+  if (process.platform === 'win32') {
+    spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  } else if (isWsl()) {
+    spawn('taskkill.exe', ['/im', 'pi-dsh-pet.exe', '/t', '/f'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  } else {
+    child.kill();
+  }
+}
+
 function scheduleRestart(): void {
   if (!petDesired || stopping || restartTimer) return;
   if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
@@ -214,6 +230,12 @@ function scheduleRestart(): void {
       console.info('[pi-dsh-pet] Windows runtime recovered');
     } catch (error) {
       console.error('[pi-dsh-pet] runtime recovery attempt failed:', String(error));
+      const failedChild = petProcess;
+      if (failedChild && failedChild.exitCode === null) {
+        forceKillRuntime(failedChild);
+        petProcess = null;
+        petConnected = false;
+      }
       scheduleRestart();
     }
   }, delay);
@@ -298,21 +320,7 @@ async function stopPet(): Promise<void> {
     });
   });
 
-  if (child.exitCode === null) {
-    if (process.platform === 'win32') {
-      spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-    } else if (isWsl()) {
-      spawn('taskkill.exe', ['/im', 'pi-dsh-pet.exe', '/t', '/f'], {
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-    } else {
-      child.kill();
-    }
-  }
+  if (child.exitCode === null) forceKillRuntime(child);
   if (petProcess === child) petProcess = null;
   petConnected = false;
 }
