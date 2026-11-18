@@ -159,6 +159,11 @@ fn monitor_rects(window: &tauri::WebviewWindow) -> Vec<ScreenRect> {
 }
 
 #[cfg(target_os = "windows")]
+fn clamp_to_bounds(value: f64, min: f64, max: f64) -> f64 {
+    if max < min { (min + max) / 2.0 } else { value.clamp(min, max) }
+}
+
+#[cfg(target_os = "windows")]
 fn nearest_screen(screens: &[ScreenRect], x: f64, y: f64) -> Option<ScreenRect> {
     if let Some(screen) = screens.iter().copied().find(|screen| screen.contains(x, y)) {
         return Some(screen);
@@ -389,8 +394,8 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
                             let max_x = screen.right() - right_offset;
                             let min_y = screen.y - top_offset;
                             let max_y = screen.bottom() - bottom_offset;
-                            let x = (origin.x as f64).clamp(min_x, max_x);
-                            let y = (origin.y as f64).clamp(min_y, max_y);
+                            let x = clamp_to_bounds(origin.x as f64, min_x, max_x);
+                            let y = clamp_to_bounds(origin.y as f64, min_y, max_y);
                             let _ = window.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
                         }
                     }
