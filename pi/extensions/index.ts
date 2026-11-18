@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import type { Server as HttpServer, IncomingMessage, ServerResponse } from 'node:http';
+import type { Server as HttpServer, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import { stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createReadStream } from 'node:fs';
 import { dirname, join, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +40,7 @@ async function sendFile(res: ServerResponse, file: string): Promise<void> {
       'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
       'content-length': info.size,
       'cache-control': 'public, max-age=3600',
+      'access-control-allow-origin': '*',
     });
     createReadStream(file).pipe(res);
   } catch {
@@ -131,9 +132,19 @@ async function startServer(): Promise<number> {
   throw new Error('could not find a free pet port');
 }
 
+function isWsl(): boolean {
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+  try {
+    return readFileSync('/proc/sys/kernel/osrelease', 'utf8').toLowerCase().includes('microsoft');
+  } catch {
+    return false;
+  }
+}
+
 function findPetExecutable(): string {
   if (process.env.PI_DSH_PET_BIN) return process.env.PI_DSH_PET_BIN;
-  const binary = process.platform === 'win32' ? 'pi-dsh-pet.exe' : 'pi-dsh-pet';
+  const windowsRuntime = process.platform === 'win32' || isWsl();
+  const binary = windowsRuntime ? 'pi-dsh-pet.exe' : 'pi-dsh-pet';
   const candidates = [
     join(PACKAGE_ROOT, 'pi', 'bin', binary),
     join(PACKAGE_ROOT, 'src-tauri', 'target', 'release', binary),
@@ -150,11 +161,6 @@ function launchPet(size: string): void {
     cwd: PACKAGE_ROOT,
     stdio: 'ignore',
     windowsHide: true,
-    env: {
-      ...process.env,
-      PI_DSH_PET_PORT: String(port),
-      PI_DSH_PET_SIZE: size,
-    },
   });
 
   petProcess.on('exit', () => { petProcess = null; });
@@ -167,8 +173,19 @@ function launchPet(size: string): void {
 
 function stopPet(): void {
   if (!petProcess || petProcess.exitCode !== null) return;
+
+  // Ask the Tauri process to exit cleanly first. The Pi extension owns its lifecycle.
+  broadcast?.('shutdown');
+
   if (process.platform === 'win32') {
     spawn('taskkill.exe', ['/pid', String(petProcess.pid), '/t', '/f'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  } else if (isWsl()) {
+    // A Windows process launched through WSL interop is not reliably terminated
+    // by ChildProcess.kill(); use taskkill on the Windows side as a fallback.
+    spawn('taskkill.exe', ['/im', 'pi-dsh-pet.exe', '/t', '/f'], {
       stdio: 'ignore',
       windowsHide: true,
     });
