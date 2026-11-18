@@ -403,7 +403,10 @@ export default function (pi: ExtensionAPI) {
     broadcastStatus('thinking');
   });
 
-  pi.on('turn_start', () => broadcastStatus('thinking'));
+  pi.on('turn_start', () => {
+    turnHadError = false;
+    broadcastStatus('thinking');
+  });
 
   // A tool request may pause for approval; show waiting only if execution does not start immediately.
   pi.on('tool_call', () => {
