@@ -372,8 +372,14 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
 
                     let _ = window.set_position(tauri::PhysicalPosition::new(body.x.round() as i32, body.y.round() as i32));
                     let floor_y = body.screen.bottom() - bottom_offset;
-                    let at_floor = (body.y - floor_y).abs() < 1.0;
-                    if at_floor && body.vy.abs() < 1.0 && body.vx.abs() < 15.0 {
+                    let ceiling_y = body.screen.y - top_offset;
+                    let left_x = body.screen.x - left_offset;
+                    let right_x = body.screen.right() - right_offset;
+                    let at_contact = (body.y - floor_y).abs() < 1.0
+                        || (body.x - left_x).abs() < 1.0
+                        || (body.x - right_x).abs() < 1.0
+                        || (physics.ceiling_bounce && (body.y - ceiling_y).abs() < 1.0);
+                    if at_contact && body.vx.abs() < 15.0 && body.vy.abs() < 15.0 {
                         flight = None;
                     }
                 }
