@@ -291,17 +291,14 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
                     let dt = now.duration_since(last_frame).as_secs_f64().clamp(0.0, 0.05);
                     let physics = state.physics.lock().map(|value| *value).unwrap_or_default();
                     let screens = monitor_rects(&window);
-                    let size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(1, 1));
                     let left_offset = bounds.left * scale;
                     let top_offset = bounds.top * scale;
                     let right_offset = bounds.right * scale;
                     let bottom_offset = bounds.bottom * scale;
-                    let mut remaining = dt;
                     let steps = ((body.vx.hypot(body.vy) * dt / 8.0).ceil() as usize).clamp(1, 64);
                     let step_dt = if steps > 0 { dt / steps as f64 } else { dt };
 
                     for _ in 0..steps {
-                        body.vx += physics.gravity * scale * step_dt;
                         body.vy += physics.gravity * scale * step_dt;
                         body.x += body.vx * step_dt;
                         body.y += body.vy * step_dt;
@@ -356,8 +353,6 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
                     if at_floor && body.vy.abs() < 1.0 && body.vx.abs() < 15.0 {
                         flight = None;
                     }
-                    let _ = size;
-                    let _ = remaining;
                 }
                 if inside != last_hit_inside {
                     let _ = window.set_ignore_cursor_events(!inside);
