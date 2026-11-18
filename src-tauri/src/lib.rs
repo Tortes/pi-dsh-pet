@@ -32,6 +32,7 @@ struct PhysicsConfig {
     ground_friction: f64,
     ceiling_bounce: bool,
     throw_power: f64,
+    drag_spring: bool,
 }
 
 impl Default for PhysicsConfig {
@@ -42,6 +43,7 @@ impl Default for PhysicsConfig {
             ground_friction: FRICTION_DEFAULT,
             ceiling_bounce: true,
             throw_power: 1.0,
+            drag_spring: true,
         }
     }
 }
@@ -236,6 +238,9 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
     thread::spawn(move || {
         let mut dragging = false;
         let mut drag_offset = (0.0_f64, 0.0_f64);
+        let mut drag_position = (0.0_f64, 0.0_f64);
+        let mut drag_velocity = (0.0_f64, 0.0_f64);
+        let mut last_drag_frame = Instant::now();
         let mut trail = VecDeque::<DragSample>::new();
         let mut flight: Option<FlightState> = None;
         let mut last_frame = Instant::now();
@@ -264,15 +269,35 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
                 dragging = true;
                 flight = None;
                 drag_offset = (cursor_x - origin.x as f64, cursor_y - origin.y as f64);
+                drag_position = (origin.x as f64, origin.y as f64);
+                drag_velocity = (0.0, 0.0);
+                last_drag_frame = now;
                 trail.clear();
                 trail.push_back(DragSample { at: now, x: cursor_x, y: cursor_y });
                 let _ = window.set_ignore_cursor_events(false);
             }
 
             if dragging && pressed {
-                let next_x = (cursor_x - drag_offset.0).round() as i32;
-                let next_y = (cursor_y - drag_offset.1).round() as i32;
-                let _ = window.set_position(tauri::PhysicalPosition::new(next_x, next_y));
+                let target_x = cursor_x - drag_offset.0;
+                let target_y = cursor_y - drag_offset.1;
+                let physics = state.physics.lock().map(|value| *value).unwrap_or_default();
+                let drag_dt = now.duration_since(last_drag_frame).as_secs_f64().clamp(0.0, 0.05);
+                if physics.drag_spring {
+                    drag_velocity.0 += ((target_x - drag_position.0) * 200.0 - drag_velocity.0 * 30.0)
+                        * physics.throw_power * drag_dt;
+                    drag_velocity.1 += ((target_y - drag_position.1) * 200.0 - drag_velocity.1 * 30.0)
+                        * physics.throw_power * drag_dt;
+                    drag_position.0 += drag_velocity.0 * drag_dt;
+                    drag_position.1 += drag_velocity.1 * drag_dt;
+                } else {
+                    drag_position = (target_x, target_y);
+                    drag_velocity = (0.0, 0.0);
+                }
+                let _ = window.set_position(tauri::PhysicalPosition::new(
+                    drag_position.0.round() as i32,
+                    drag_position.1.round() as i32,
+                ));
+                last_drag_frame = now;
                 trail.push_back(DragSample { at: now, x: cursor_x, y: cursor_y });
                 while trail.front().is_some_and(|sample| now.duration_since(sample.at).as_millis() > 200) {
                     trail.pop_front();
