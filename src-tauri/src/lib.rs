@@ -321,6 +321,11 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
                             screen,
                         });
                     }
+                } else {
+                    // A gentle release should not leave the sprite lagging behind the final pointer position.
+                    let final_x = (cursor_x - drag_offset.0).round() as i32;
+                    let final_y = (cursor_y - drag_offset.1).round() as i32;
+                    let _ = window.set_position(tauri::PhysicalPosition::new(final_x, final_y));
                 }
                 trail.clear();
             }
