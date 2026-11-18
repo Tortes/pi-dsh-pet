@@ -266,8 +266,14 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('turn_start', () => broadcast?.('thinking'));
 
-  pi.on('tool_call', (event) => {
-    broadcast?.(JSON.stringify({ type: 'tool_call', tool: event.toolName }));
+  // Use execution lifecycle events rather than tool_call preflight: blocked or
+  // invalid tool calls should not make the pet look as if work actually started.
+  pi.on('tool_execution_start', (event) => {
+    broadcast?.(JSON.stringify({ type: 'tool_start', tool: event.toolName }));
+  });
+
+  pi.on('tool_execution_end', (event) => {
+    broadcast?.(JSON.stringify({ type: 'tool_end', tool: event.toolName, error: event.isError }));
   });
 
   pi.registerCommand('pet', {
