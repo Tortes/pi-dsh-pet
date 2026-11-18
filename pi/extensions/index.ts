@@ -21,12 +21,22 @@ const MIME: Record<string, string> = {
 
 let port = 0;
 let server: HttpServer | null = null;
+let closeWebSockets: (() => void) | null = null;
 let broadcast: ((message: string) => void) | null = null;
 let petProcess: ChildProcess | null = null;
 let petConnected = false;
+let petEverConnected = false;
+let petDesired = false;
+let stopping = false;
+let petSize = 'normal';
+let restartAttempts = 0;
+let restartTimer: ReturnType<typeof setTimeout> | null = null;
+let waitingTimer: ReturnType<typeof setTimeout> | null = null;
+let turnHadError = false;
 let connectionWaiters = new Set<() => void>();
 
 const SIZE_MAP: Record<string, number> = { small: 260, normal: 400, large: 540 };
+const MAX_RESTART_ATTEMPTS = 5;
 
 function safeAsset(root: string, rel: string): string | undefined {
   if (!rel || rel.includes('..')) return undefined;
@@ -62,12 +72,10 @@ async function startServer(): Promise<number> {
       res.end(JSON.stringify({ ok: true, port }));
       return;
     }
-
     if (pathname === '/config.jsonc') {
       await sendFile(res, join(PET_ASSETS, 'config.jsonc'));
       return;
     }
-
     if (pathname.startsWith('/webm/')) {
       const file = safeAsset(join(PET_ASSETS, 'webm'), pathname.slice('/webm/'.length));
       if (!file) {
@@ -78,7 +86,6 @@ async function startServer(): Promise<number> {
       await sendFile(res, file);
       return;
     }
-
     res.writeHead(404);
     res.end('Not found');
   });
@@ -90,13 +97,22 @@ async function startServer(): Promise<number> {
   wsServer.on('connection', (ws) => {
     clients.add(ws);
     petConnected = true;
+    petEverConnected = true;
+    restartAttempts = 0;
     for (const resolve of connectionWaiters) resolve();
     connectionWaiters.clear();
+
+    ws.on('message', (data) => {
+      if (data.toString() === 'ping' && ws.readyState === ws.OPEN) ws.send('pong');
+    });
     ws.on('close', () => {
       clients.delete(ws);
       petConnected = clients.size > 0;
     });
-    ws.on('error', () => clients.delete(ws));
+    ws.on('error', () => {
+      clients.delete(ws);
+      petConnected = clients.size > 0;
+    });
   });
 
   srv.on('upgrade', (req, socket, head) => {
@@ -131,6 +147,10 @@ async function startServer(): Promise<number> {
           if (ws.readyState === ws.OPEN) ws.send(message);
         }
       };
+      closeWebSockets = () => {
+        for (const ws of clients) ws.close(1001, 'Pi pet host shutting down');
+        wsServer.close();
+      };
       return port;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
@@ -138,6 +158,17 @@ async function startServer(): Promise<number> {
   }
 
   throw new Error('could not find a free pet port');
+}
+
+function stopServer(): void {
+  broadcast?.('shutdown');
+  closeWebSockets?.();
+  closeWebSockets = null;
+  server?.close();
+  server = null;
+  broadcast = null;
+  port = 0;
+  petConnected = false;
 }
 
 function isWsl(): boolean {
@@ -159,6 +190,33 @@ function findPetExecutable(): string {
     join(PACKAGE_ROOT, 'src-tauri', 'target', 'debug', binary),
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+
+function broadcastStatus(state: 'thinking' | 'working' | 'result' | 'waiting' | 'success' | 'error'): void {
+  broadcast?.(JSON.stringify({ type: 'work_status', state }));
+}
+
+function scheduleRestart(): void {
+  if (!petDesired || stopping || restartTimer) return;
+  if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
+    petDesired = false;
+    console.error('[pi-dsh-pet] runtime restart limit reached; use /pet to start it again');
+    return;
+  }
+
+  const delay = Math.min(500 * (2 ** restartAttempts), 8000);
+  restartAttempts += 1;
+  restartTimer = setTimeout(async () => {
+    restartTimer = null;
+    try {
+      await launchPet(petSize);
+      await waitForPetConnection(12000);
+      console.info('[pi-dsh-pet] Windows runtime recovered');
+    } catch (error) {
+      console.error('[pi-dsh-pet] runtime recovery attempt failed:', String(error));
+      scheduleRestart();
+    }
+  }, delay);
 }
 
 function launchPet(size: string): Promise<void> {
@@ -187,30 +245,50 @@ function launchPet(size: string): Promise<void> {
       if (code !== 0 && code !== null) {
         console.error(`[pi-dsh-pet] runtime exited (code=${code}, signal=${signal})`);
       }
+      if (petDesired && petEverConnected && !stopping) scheduleRestart();
     });
   });
 }
 
 async function waitForPetConnection(timeoutMs = 15000): Promise<void> {
   if (petConnected) return;
+  const child = petProcess;
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      connectionWaiters.delete(onConnected);
-      reject(new Error('Windows pet started but did not connect to Pi. Check WSL localhost forwarding and Windows Firewall.'));
-    }, timeoutMs);
-    const onConnected = () => {
+    const cleanup = () => {
       clearTimeout(timeout);
+      connectionWaiters.delete(onConnected);
+      child?.removeListener('exit', onExit);
+    };
+    const onConnected = () => {
+      cleanup();
       resolve();
     };
+    const onExit = () => {
+      cleanup();
+      reject(new Error('Windows pet exited before connecting to Pi'));
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('Windows pet started but did not connect to Pi. Check WSL localhost forwarding and Windows Firewall.'));
+    }, timeoutMs);
     connectionWaiters.add(onConnected);
+    child?.once('exit', onExit);
   });
 }
 
 async function stopPet(): Promise<void> {
-  const child = petProcess;
-  if (!child || child.exitCode !== null) return;
+  petDesired = false;
+  petEverConnected = false;
+  if (restartTimer) clearTimeout(restartTimer);
+  restartTimer = null;
 
-  // Ask Tauri to close itself first. Fall back to an OS-level kill if it does not.
+  const child = petProcess;
+  if (!child || child.exitCode !== null) {
+    petProcess = null;
+    petConnected = false;
+    return;
+  }
+
   broadcast?.('shutdown');
   await new Promise<void>((resolve) => {
     const timeout = setTimeout(resolve, 1200);
@@ -239,18 +317,23 @@ async function stopPet(): Promise<void> {
   petConnected = false;
 }
 
-export default function (pi: ExtensionAPI) {
-  const shutdown = () => {
-    void stopPet();
-    server?.close();
-    server = null;
-    broadcast = null;
-    port = 0;
-  };
+async function shutdown(): Promise<void> {
+  stopping = true;
+  if (waitingTimer) clearTimeout(waitingTimer);
+  waitingTimer = null;
+  await stopPet();
+  stopServer();
+}
 
-  process.once('exit', shutdown);
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+export default function (pi: ExtensionAPI) {
+  process.once('exit', () => {
+    petDesired = false;
+    broadcast?.('shutdown');
+    closeWebSockets?.();
+    server?.close();
+  });
+  process.once('SIGINT', () => { void shutdown(); });
+  process.once('SIGTERM', () => { void shutdown(); });
 
   pi.on('session_start', async (_event, ctx) => {
     try {
@@ -260,20 +343,45 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on('agent_start', () => broadcast?.('agent_start'));
+  pi.on('session_shutdown', async () => {
+    await shutdown();
+  });
 
-  pi.on('agent_settled', () => broadcast?.('agent_idle'));
+  pi.on('agent_start', () => {
+    turnHadError = false;
+    broadcastStatus('thinking');
+  });
 
-  pi.on('turn_start', () => broadcast?.('thinking'));
+  pi.on('turn_start', () => broadcastStatus('thinking'));
 
-  // Use execution lifecycle events rather than tool_call preflight: blocked or
-  // invalid tool calls should not make the pet look as if work actually started.
-  pi.on('tool_execution_start', (event) => {
-    broadcast?.(JSON.stringify({ type: 'tool_start', tool: event.toolName }));
+  // A tool request may pause for approval; show waiting only if execution does not start immediately.
+  pi.on('tool_call', () => {
+    if (waitingTimer) clearTimeout(waitingTimer);
+    waitingTimer = setTimeout(() => {
+      waitingTimer = null;
+      broadcastStatus('waiting');
+    }, 400);
+  });
+
+  pi.on('tool_execution_start', () => {
+    if (waitingTimer) clearTimeout(waitingTimer);
+    waitingTimer = null;
+    broadcastStatus('working');
   });
 
   pi.on('tool_execution_end', (event) => {
-    broadcast?.(JSON.stringify({ type: 'tool_end', tool: event.toolName, error: event.isError }));
+    if (event.isError) turnHadError = true;
+    broadcastStatus(event.isError ? 'error' : 'result');
+  });
+
+  pi.on('agent_end', (event) => {
+    if (waitingTimer) clearTimeout(waitingTimer);
+    waitingTimer = null;
+    const messages = (event as { messages?: Array<{ role?: string; stopReason?: string }> }).messages ?? [];
+    const messageError = messages.some((message) =>
+      message.role === 'assistant' && ['error', 'aborted', 'length'].includes(message.stopReason ?? ''),
+    );
+    broadcastStatus(turnHadError || messageError ? 'error' : 'success');
   });
 
   pi.registerCommand('pet', {
@@ -287,6 +395,11 @@ export default function (pi: ExtensionAPI) {
         await startServer();
         const requested = (args ?? '').trim().toLowerCase();
         const size = requested in SIZE_MAP ? requested : 'normal';
+        petSize = size;
+        petDesired = true;
+        stopping = false;
+        petEverConnected = false;
+        restartAttempts = 0;
         await launchPet(size);
         await waitForPetConnection();
         ctx.ui.notify('Windows desktop pet is running (' + size + ')', 'info');
