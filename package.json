@@ -1,0 +1,22 @@
+{
+  "name": "pi-dsh-pet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lightweight Pi desktop pet using Rust + Tauri.",
+  "type": "module",
+  "files": ["pi", "dsh-pet/assets", "src-tauri"],
+  "scripts": {
+    "pet:dev": "tauri dev",
+    "pet:build": "tauri build"
+  },
+  "pi": {
+    "extensions": ["./pi/extensions"]
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0"
+  },
+  "license": "MIT"
+}
