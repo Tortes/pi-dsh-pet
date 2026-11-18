@@ -1,8 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 
-const params = new URLSearchParams(location.search);
-const port = Number(params.get('port'));
-const requestedSize = Number(params.get('size') || 400);
+const runtime = await invoke('runtime_config');
+const port = Number(runtime.port);
+const requestedSize = Number(runtime.size);
 
 const root = document.querySelector('#pet-root');
 const pet = document.createElement('div');
