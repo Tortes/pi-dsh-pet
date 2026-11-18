@@ -398,12 +398,13 @@ export default function (pi: ExtensionAPI) {
         petSize = size;
         petDesired = true;
         stopping = false;
-        petEverConnected = false;
+        if (!petConnected) petEverConnected = false;
         restartAttempts = 0;
         await launchPet(size);
         await waitForPetConnection();
         ctx.ui.notify('Windows desktop pet is running (' + size + ')', 'info');
       } catch (error) {
+        await stopPet();
         ctx.ui.notify('pet start failed: ' + String(error), 'error');
       }
     },
