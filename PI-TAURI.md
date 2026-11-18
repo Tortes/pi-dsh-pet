@@ -1,57 +1,75 @@
 # Pi + Rust/Tauri desktop pet
 
-The repository keeps the upstream dsh-pet tree as the source of animation/config assets and adds a lightweight Pi adapter.
+The Pi extension is the only lifecycle controller. The Windows Tauri executable is a child runtime and is not intended to be launched by double-clicking.
 
-## Architecture
+## Runtime architecture
 
-Pi (WSL/Linux)
--> localhost HTTP/WebSocket server
--> Windows pi-dsh-pet.exe
--> Tauri
--> Windows WebView2
--> transparent desktop window
+Pi (WSL / Linux)
+-> local HTTP + WebSocket server (127.0.0.1)
+-> spawn Windows pi-dsh-pet.exe with [port, size] arguments
+-> Tauri / WebView2 transparent pet window
 
-The Pi process owns the Agent lifecycle. The Tauri process owns only the desktop UI.
+Pi serves the upstream animation assets from `dsh-pet/assets`. Tauri loads the configuration and WebM files from that local server, then shows its window. The window stays hidden until initialization succeeds.
 
-The Windows runtime connects back to the Pi server on 127.0.0.1. WSL 2 localhost forwarding makes the WSL service reachable from Windows on localhost.
+## Build the Windows runtime
 
-## Development
-
-Build the Windows runtime on Windows:
+Run on Windows (or use the Windows GitHub Actions runner):
 
     npm install
     npm run pet:build
 
-Then make the generated executable available to the Pi extension, or set:
+The build script generates the required placeholder Windows ICO before invoking Tauri.
 
-    PI_DSH_PET_BIN=/path/to/pi-dsh-pet.exe
+GitHub Actions uploads:
+- `pi-dsh-pet.exe`
+- the NSIS installer
 
-The extension also searches src-tauri/target/release/pi-dsh-pet.exe and src-tauri/target/debug/pi-dsh-pet.exe.
+## Install the executable for Pi in WSL
 
-From Pi:
+Download the `pi-dsh-pet-windows` artifact from the successful Tauri workflow and extract `pi-dsh-pet.exe`.
+
+Preferred: place it at:
+
+    pi/bin/pi-dsh-pet.exe
+
+The Pi extension automatically searches that path. Alternatively, set `PI_DSH_PET_BIN` to a WSL-visible path, for example:
+
+    export PI_DSH_PET_BIN=/mnt/c/Users/<you>/Apps/pi-dsh-pet.exe
+
+Use a Linux/WSL path such as `/mnt/c/...`, not a raw `C:\\...` path.
+
+## Use from Pi
+
+Load this repository as a Pi package/extension, then use:
 
     /pet
     /pet small
     /pet large
     /pet-stop
 
+- `/pet` starts the local asset server and then spawns the Windows runtime.
+- `/pet-stop` asks the runtime to exit and uses `taskkill.exe` as a WSL fallback.
+- Exiting Pi closes the pet.
+- Agent lifecycle events are sent over the local WebSocket connection.
+
+**Do not double-click `pi-dsh-pet.exe`.** It expects the Pi-provided port and asset server. A direct launch has no Pi session to connect to and intentionally leaves the window hidden.
+
 ## Current MVP
 
-- Rust + Tauri 2 desktop runtime
-- Windows transparent / always-on-top window
-- WebView2 renderer
-- WSL -> Windows process boundary
-- localhost WebSocket Agent events
-- upstream WebM animation assets
-- basic thinking / tool / idle state mapping
-- global cursor hit-testing for click-through behavior
+- Rust + Tauri 2 Windows runtime
+- WebView2 rendering on Windows (not WSLg)
+- compact transparent always-on-top window
+- hidden until Pi assets/config load successfully
+- Pi-served WebM assets and JSONC config
+- local WebSocket Agent event channel
+- basic thinking / tool / idle animation mapping
+- native global cursor hit-testing for click-through behavior
 
-## Deliberately deferred
+## Not implemented yet
 
-- multi-monitor work-area geometry
-- full dsh-pet physics
-- all 91 animation-state semantics
-- tray/menu
-- notifications and chat
-- packaged Pi distribution with an embedded Windows binary
-- automated runtime integration tests
+- full upstream physics and random animation scheduler
+- multi-monitor-aware positioning and per-monitor DPI validation
+- drag / throw interaction
+- tray/menu, notifications, chat and other DSH features
+- automatic binary download/install from the Pi package
+- runtime crash recovery and reconnect supervision
