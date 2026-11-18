@@ -110,7 +110,7 @@ fn close_pet(app: tauri::AppHandle) {
 }
 
 #[cfg(target_os = "windows")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct ScreenRect {
     x: f64,
     y: f64,
@@ -141,6 +141,7 @@ struct FlightState {
     y: f64,
     vx: f64,
     vy: f64,
+    screen: ScreenRect,
 }
 
 #[cfg(target_os = "windows")]
@@ -276,12 +277,19 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
                 let physics = state.physics.lock().map(|value| *value).unwrap_or_default();
                 let (vx, vy) = release_velocity(&trail, now, physics.throw_power);
                 if vx.abs() > 0.0 || vy.abs() > 0.0 {
-                    flight = Some(FlightState {
-                        x: window.outer_position().map(|p| p.x as f64).unwrap_or(0.0),
-                        y: window.outer_position().map(|p| p.y as f64).unwrap_or(0.0),
-                        vx,
-                        vy,
-                    });
+                    let position = window.outer_position().unwrap_or(tauri::PhysicalPosition::new(0, 0));
+                    let screens = monitor_rects(&window);
+                    let center_x = position.x as f64 + (bounds.left + bounds.right) * scale / 2.0;
+                    let center_y = position.y as f64 + (bounds.top + bounds.bottom) * scale / 2.0;
+                    if let Some(screen) = nearest_screen(&screens, center_x, center_y) {
+                        flight = Some(FlightState {
+                            x: position.x as f64,
+                            y: position.y as f64,
+                            vx,
+                            vy,
+                            screen,
+                        });
+                    }
                 }
                 trail.clear();
             }
@@ -305,11 +313,19 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
 
                         let center_x = body.x + (left_offset + right_offset) / 2.0;
                         let center_y = body.y + (top_offset + bottom_offset) / 2.0;
-                        let Some(screen) = nearest_screen(&screens, center_x, center_y) else { break; };
+                        if !screens.contains(&body.screen) {
+                            if let Some(screen) = nearest_screen(&screens, center_x, center_y) {
+                                body.screen = screen;
+                            } else {
+                                break;
+                            }
+                        }
+                        if let Some(screen) = screens.iter().copied().find(|screen| screen.contains(center_x, center_y)) {
+                            body.screen = screen;
+                        }
+                        let screen = body.screen;
                         let min_x = screen.x - left_offset;
                         let max_x = screen.right() - right_offset;
-                        let min_y = screen.y - top_offset;
-                        let max_y = screen.bottom() - bottom_offset;
 
                         if body.x < min_x {
                             let neighbor = screens.iter().any(|candidate| candidate.contains(screen.x - 1.0, center_y));
@@ -327,7 +343,10 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
 
                         let center_x = body.x + (left_offset + right_offset) / 2.0;
                         let center_y = body.y + (top_offset + bottom_offset) / 2.0;
-                        let Some(screen) = nearest_screen(&screens, center_x, center_y) else { break; };
+                        if let Some(next_screen) = screens.iter().copied().find(|candidate| candidate.contains(center_x, center_y)) {
+                            body.screen = next_screen;
+                        }
+                        let screen = body.screen;
                         let min_y = screen.y - top_offset;
                         let max_y = screen.bottom() - bottom_offset;
                         if body.y < min_y && physics.ceiling_bounce {
