@@ -4,12 +4,14 @@ const runtime = await invoke('runtime_config');
 const port = Number(runtime.port);
 const requestedSize = Number(runtime.size);
 
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error('Invalid Pi pet server port. Start the pet with the Pi /pet command.');
+}
+
 const root = document.querySelector('#pet-root');
 const pet = document.createElement('div');
 pet.className = 'pet';
 pet.style.width = requestedSize + 'px';
-pet.style.right = '24px';
-pet.style.top = '100px';
 root.appendChild(pet);
 
 const video = document.createElement('video');
@@ -23,7 +25,9 @@ let current = '';
 let overrideTimer = null;
 
 function stripJsonc(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^\\:])\/\/.*$/gm, '$1');
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^\\:])\/\/.*$/gm, '$1');
 }
 
 function pick(list) {
@@ -32,8 +36,17 @@ function pick(list) {
 
 async function loadConfig() {
   const response = await fetch('http://127.0.0.1:' + port + '/config.jsonc');
+  if (!response.ok) {
+    throw new Error('Pi asset server returned HTTP ' + response.status);
+  }
   config = JSON.parse(stripJsonc(await response.text()));
-  play(pick(config.animations.idle));
+
+  const idle = config?.animations?.idle;
+  if (!Array.isArray(idle) || idle.length === 0) {
+    throw new Error('No idle animations found in dsh-pet/assets/config.jsonc');
+  }
+
+  play(pick(idle));
 }
 
 function animationUrl(name) {
@@ -45,7 +58,7 @@ function play(name, loop = false) {
   current = name;
   video.loop = loop;
   video.src = animationUrl(name);
-  video.play().catch(() => {});
+  video.play().catch(error => console.error('[pi-dsh-pet] video playback failed:', error));
 }
 
 function handleMessage(raw) {
@@ -67,7 +80,9 @@ function handleMessage(raw) {
           ? '写代码'
           : '轻快记录';
       }
-    } catch {}
+    } catch (error) {
+      console.warn('[pi-dsh-pet] invalid event:', error);
+    }
   }
 
   if (animation) {
@@ -91,22 +106,18 @@ setInterval(() => {
   }
 }, 100);
 
-pet.addEventListener('pointerdown', () => {
-  invoke('set_ignore_cursor_events', { ignore: false }).catch(() => {});
-});
-pet.addEventListener('pointerup', () => {
-  invoke('set_ignore_cursor_events', { ignore: true }).catch(() => {});
-});
-pet.addEventListener('click', () => {
-  if (config?.animations?.clicks?.length) play(pick(config.animations.clicks));
-});
-
 async function connect() {
   const ws = new WebSocket('ws://127.0.0.1:' + port + '/ws');
   ws.onmessage = event => handleMessage(String(event.data));
+  ws.onerror = error => console.warn('[pi-dsh-pet] WebSocket connection error:', error);
   ws.onclose = () => setTimeout(connect, 1000);
 }
 
-await loadConfig();
-await invoke('set_ignore_cursor_events', { ignore: true });
-await connect();
+try {
+  await loadConfig();
+  await connect();
+  await invoke('show_pet');
+} catch (error) {
+  console.error('[pi-dsh-pet] startup failed:', error);
+  throw error;
+}
