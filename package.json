@@ -13,6 +13,7 @@
     "extensions": ["./pi/extensions"]
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
