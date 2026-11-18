@@ -27,6 +27,7 @@ let heartbeatTimer = null;
 let reconnectTimer = null;
 let reconnectStartedAt = 0;
 let reconnectAttempts = 0;
+let lastPong = 0;
 let shuttingDown = false;
 
 const WORK_STATUS_INDEX = {
@@ -150,13 +151,13 @@ async function syncBounds() {
     bottom: rect.bottom,
   });
   if (bounds === lastBounds) return;
-  lastBounds = bounds;
   await invoke('set_pet_bounds', {
     left: rect.left,
     top: rect.top,
     right: rect.right,
     bottom: rect.bottom,
   });
+  lastBounds = bounds;
 }
 
 function connect() {
