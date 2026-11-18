@@ -22,7 +22,21 @@ pet.appendChild(video);
 
 let config = null;
 let current = '';
-let overrideTimer = null;
+let socket = null;
+let heartbeatTimer = null;
+let reconnectTimer = null;
+let reconnectStartedAt = 0;
+let reconnectAttempts = 0;
+let shuttingDown = false;
+
+const WORK_STATUS_INDEX = {
+  thinking: 0,
+  working: 1,
+  result: 2,
+  waiting: 3,
+  success: 4,
+  error: 5,
+};
 
 function stripJsonc(text) {
   return text
@@ -34,11 +48,16 @@ function pick(list) {
   return list[Math.floor(Math.random() * list.length)];
 }
 
+function pickSlot(slot) {
+  const candidates = Array.isArray(slot) ? slot.filter(value => typeof value === 'string' && value) : [slot];
+  if (candidates.length === 0) return null;
+  const distinct = candidates.filter(value => value !== current);
+  return pick(distinct.length ? distinct : candidates);
+}
+
 async function loadConfig() {
   const response = await fetch('http://127.0.0.1:' + port + '/config.jsonc');
-  if (!response.ok) {
-    throw new Error('Pi asset server returned HTTP ' + response.status);
-  }
+  if (!response.ok) throw new Error('Pi asset server returned HTTP ' + response.status);
   config = JSON.parse(stripJsonc(await response.text()));
 
   const idle = config?.animations?.idle;
@@ -46,7 +65,17 @@ async function loadConfig() {
     throw new Error('No idle animations found in dsh-pet/assets/config.jsonc');
   }
 
-  play(pick(idle));
+  const physics = config.physics ?? {};
+  await invoke('set_physics', {
+    physics: {
+      gravity: Number(physics.gravity ?? 1400),
+      restitution: Number(physics.restitution ?? 0.78),
+      groundFriction: Number(physics.groundFriction ?? 2.5),
+      ceilingBounce: physics.ceilingBounce !== false,
+      throwPower: Number(physics.throwPower ?? 1),
+    },
+  });
+  play(pick(idle), true);
 }
 
 function animationUrl(name) {
@@ -54,70 +83,129 @@ function animationUrl(name) {
 }
 
 function play(name, loop = false) {
-  if (!name || name === current) return;
+  if (!name) return;
+  if (name === current && video.src && video.loop === loop) return;
   current = name;
+  video.onended = null;
   video.loop = loop;
   video.src = animationUrl(name);
+  if (!loop) {
+    video.onended = () => {
+      const idle = config?.animations?.idle;
+      if (Array.isArray(idle) && idle.length) play(pick(idle), true);
+    };
+  }
   video.play().catch(error => console.error('[pi-dsh-pet] video playback failed:', error));
+}
+
+function playWorkStatus(state) {
+  const index = WORK_STATUS_INDEX[state];
+  const pool = config?.animations?.events?.workStatus;
+  if (index === undefined || !Array.isArray(pool) || pool[index] === undefined) {
+    console.warn('[pi-dsh-pet] missing configured workStatus animation for:', state);
+    return;
+  }
+  const animation = pickSlot(pool[index]);
+  const looping = state === 'thinking' || state === 'working' || state === 'waiting';
+  play(animation, looping);
 }
 
 function handleMessage(raw) {
   if (raw === 'shutdown') {
+    shuttingDown = true;
+    clearInterval(heartbeatTimer);
+    clearTimeout(reconnectTimer);
     invoke('close_pet').catch(() => {});
     return;
   }
 
-  let animation = null;
-  if (raw === 'agent_start' || raw === 'thinking') {
-    animation = '深度思考碎碎念';
-  } else if (raw === 'agent_idle') {
-    animation = pick(config.animations.idle);
-  } else if (raw.startsWith('{')) {
+  if (raw === 'pong') return;
+  if (raw === 'agent_idle') {
+    const idle = config?.animations?.idle;
+    if (Array.isArray(idle) && idle.length) play(pick(idle), true);
+    return;
+  }
+  if (raw.startsWith('{')) {
     try {
       const event = JSON.parse(raw);
-      if (event.type === 'tool_start') {
-        animation = /bash|shell|exec|python|terminal/i.test(event.tool || '')
-          ? '写代码'
-          : '轻快记录';
-      } else if (event.type === 'tool_end') {
-        animation = event.error ? '被吓一跳' : '轻快记录';
-      }
+      if (event.type === 'work_status') playWorkStatus(event.state);
     } catch (error) {
       console.warn('[pi-dsh-pet] invalid event:', error);
-    }
-  }
-
-  if (animation) {
-    play(animation);
-    clearTimeout(overrideTimer);
-    if (raw !== 'agent_idle') {
-      overrideTimer = setTimeout(() => play(pick(config.animations.idle)), 6000);
     }
   }
 }
 
 let lastBounds = '';
-setInterval(() => {
-  const r = pet.getBoundingClientRect();
-  const bounds = JSON.stringify({left:r.left,top:r.top,right:r.right,bottom:r.bottom});
-  if (bounds !== lastBounds) {
-    lastBounds = bounds;
-    invoke('set_pet_bounds', {
-      left: r.left, top: r.top, right: r.right, bottom: r.bottom
-    }).catch(() => {});
-  }
-}, 100);
+function syncBounds() {
+  const rect = pet.getBoundingClientRect();
+  const bounds = JSON.stringify({
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+  });
+  if (bounds === lastBounds) return;
+  lastBounds = bounds;
+  invoke('set_pet_bounds', {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+  }).catch(() => {});
+}
 
-async function connect() {
-  const ws = new WebSocket('ws://127.0.0.1:' + port + '/ws');
-  ws.onmessage = event => handleMessage(String(event.data));
-  ws.onerror = error => console.warn('[pi-dsh-pet] WebSocket connection error:', error);
-  ws.onclose = () => setTimeout(connect, 1000);
+function connect() {
+  if (shuttingDown) return;
+  socket = new WebSocket('ws://127.0.0.1:' + port + '/ws');
+
+  socket.onopen = () => {
+    reconnectAttempts = 0;
+    reconnectStartedAt = 0;
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastPong > 8000) {
+        socket.close();
+        return;
+      }
+      socket.send('ping');
+    }, 2000);
+    lastPong = Date.now();
+  };
+
+  socket.onmessage = event => {
+    const raw = String(event.data);
+    if (raw === 'pong') {
+      lastPong = Date.now();
+      return;
+    }
+    handleMessage(raw);
+  };
+
+  socket.onerror = error => console.warn('[pi-dsh-pet] WebSocket connection error:', error);
+  socket.onclose = () => {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+    if (shuttingDown) return;
+    if (!reconnectStartedAt) reconnectStartedAt = Date.now();
+    if (Date.now() - reconnectStartedAt > 15000) {
+      console.error('[pi-dsh-pet] Pi host heartbeat lost; closing orphaned pet runtime');
+      shuttingDown = true;
+      invoke('close_pet').catch(() => {});
+      return;
+    }
+    const delay = Math.min(500 * (2 ** reconnectAttempts), 4000);
+    reconnectAttempts += 1;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, delay);
+  };
 }
 
 try {
   await loadConfig();
-  await connect();
+  syncBounds();
+  setInterval(syncBounds, 250);
+  connect();
   await invoke('show_pet');
 } catch (error) {
   console.error('[pi-dsh-pet] startup failed:', error);
