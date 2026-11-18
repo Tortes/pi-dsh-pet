@@ -23,6 +23,8 @@ let port = 0;
 let server: HttpServer | null = null;
 let broadcast: ((message: string) => void) | null = null;
 let petProcess: ChildProcess | null = null;
+let petConnected = false;
+let connectionWaiters = new Set<() => void>();
 
 const SIZE_MAP: Record<string, number> = { small: 260, normal: 400, large: 540 };
 
@@ -87,7 +89,13 @@ async function startServer(): Promise<number> {
 
   wsServer.on('connection', (ws) => {
     clients.add(ws);
-    ws.on('close', () => clients.delete(ws));
+    petConnected = true;
+    for (const resolve of connectionWaiters) resolve();
+    connectionWaiters.clear();
+    ws.on('close', () => {
+      clients.delete(ws);
+      petConnected = clients.size > 0;
+    });
     ws.on('error', () => clients.delete(ws));
   });
 
@@ -153,56 +161,87 @@ function findPetExecutable(): string {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 
-function launchPet(size: string): void {
-  if (petProcess && petProcess.exitCode === null) return;
+function launchPet(size: string): Promise<void> {
+  if (petProcess && petProcess.exitCode === null) return Promise.resolve();
 
   const exe = findPetExecutable();
-  petProcess = spawn(exe, [String(port), size], {
-    cwd: PACKAGE_ROOT,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
+  return new Promise((resolve, reject) => {
+    const child = spawn(exe, [String(port), size], {
+      cwd: PACKAGE_ROOT,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    petProcess = child;
 
-  petProcess.on('exit', () => { petProcess = null; });
-  petProcess.on('error', (err) => {
-    console.error('[pi-dsh-pet] failed to launch Tauri pet:', err.message);
-    petProcess = null;
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+    child.once('error', (err) => {
+      if (petProcess === child) petProcess = null;
+      reject(new Error(`Unable to start desktop pet at "${exe}": ${err.message}`));
+    });
+    child.once('exit', (code, signal) => {
+      if (petProcess === child) petProcess = null;
+      petConnected = false;
+      if (code !== 0 && code !== null) {
+        console.error(`[pi-dsh-pet] runtime exited (code=${code}, signal=${signal})`);
+      }
+    });
   });
-  petProcess.unref();
 }
 
-function stopPet(): void {
-  if (!petProcess || petProcess.exitCode !== null) return;
+async function waitForPetConnection(timeoutMs = 15000): Promise<void> {
+  if (petConnected) return;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      connectionWaiters.delete(onConnected);
+      reject(new Error('Windows pet started but did not connect to Pi. Check WSL localhost forwarding and Windows Firewall.'));
+    }, timeoutMs);
+    const onConnected = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    connectionWaiters.add(onConnected);
+  });
+}
 
-  // Ask the Tauri process to exit cleanly first. The Pi extension owns its lifecycle.
+async function stopPet(): Promise<void> {
+  const child = petProcess;
+  if (!child || child.exitCode !== null) return;
+
+  // Ask Tauri to close itself first. Fall back to an OS-level kill if it does not.
   broadcast?.('shutdown');
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(resolve, 1200);
+    child.once('exit', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
 
-  if (process.platform === 'win32') {
-    spawn('taskkill.exe', ['/pid', String(petProcess.pid), '/t', '/f'], {
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-  } else if (isWsl()) {
-    // A Windows process launched through WSL interop is not reliably terminated
-    // by ChildProcess.kill(); use taskkill on the Windows side as a fallback.
-    spawn('taskkill.exe', ['/im', 'pi-dsh-pet.exe', '/t', '/f'], {
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-  } else {
-    petProcess.kill();
+  if (child.exitCode === null) {
+    if (process.platform === 'win32') {
+      spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } else if (isWsl()) {
+      spawn('taskkill.exe', ['/im', 'pi-dsh-pet.exe', '/t', '/f'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } else {
+      child.kill();
+    }
   }
-  petProcess = null;
+  if (petProcess === child) petProcess = null;
+  petConnected = false;
 }
 
 export default function (pi: ExtensionAPI) {
-  let thinkingTimer: ReturnType<typeof setInterval> | null = null;
-
   const shutdown = () => {
-    if (thinkingTimer) clearInterval(thinkingTimer);
-    thinkingTimer = null;
-    broadcast?.('shutdown');
-    stopPet();
+    void stopPet();
     server?.close();
     server = null;
     broadcast = null;
@@ -223,17 +262,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('agent_start', () => broadcast?.('agent_start'));
 
-  pi.on('agent_settled', () => {
-    if (thinkingTimer) clearInterval(thinkingTimer);
-    thinkingTimer = null;
-    broadcast?.('agent_idle');
-  });
+  pi.on('agent_settled', () => broadcast?.('agent_idle'));
 
-  pi.on('turn_start', () => {
-    if (thinkingTimer) return;
-    broadcast?.('thinking');
-    thinkingTimer = setInterval(() => broadcast?.('thinking'), 2000);
-  });
+  pi.on('turn_start', () => broadcast?.('thinking'));
 
   pi.on('tool_call', (event) => {
     broadcast?.(JSON.stringify({ type: 'tool_call', tool: event.toolName }));
@@ -250,18 +281,26 @@ export default function (pi: ExtensionAPI) {
         await startServer();
         const requested = (args ?? '').trim().toLowerCase();
         const size = requested in SIZE_MAP ? requested : 'normal';
-        launchPet(size);
-        ctx.ui.notify('Tauri pet launched (' + size + ')', 'info');
+        await launchPet(size);
+        await waitForPetConnection();
+        ctx.ui.notify('Windows desktop pet is running (' + size + ')', 'info');
       } catch (error) {
         ctx.ui.notify('pet start failed: ' + String(error), 'error');
       }
     },
   });
 
+  pi.registerCommand('pet-status', {
+    description: 'Check whether the Windows desktop pet is connected',
+    handler: async (_args, ctx) => {
+      ctx.ui.notify(petConnected ? 'Pet is connected' : 'Pet is not running', 'info');
+    },
+  });
+
   pi.registerCommand('pet-stop', {
     description: 'Close the Tauri desktop pet',
     handler: async (_args, ctx) => {
-      stopPet();
+      await stopPet();
       ctx.ui.notify('Pet closed', 'info');
     },
   });
