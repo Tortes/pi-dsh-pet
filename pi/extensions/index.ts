@@ -31,6 +31,8 @@ let stopping = false;
 let petSize = 'normal';
 let restartAttempts = 0;
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
+let connectionLostTimer: ReturnType<typeof setTimeout> | null = null;
+let heartbeatWatchdog: ReturnType<typeof setInterval> | null = null;
 let waitingTimer: ReturnType<typeof setTimeout> | null = null;
 let turnHadError = false;
 let connectionWaiters = new Set<() => void>();
@@ -93,25 +95,56 @@ async function startServer(): Promise<number> {
   const WebSocketServer = (await import('ws')).WebSocketServer;
   const wsServer = new WebSocketServer({ noServer: true });
   const clients = new Set<import('ws').WebSocket>();
+  const lastPing = new WeakMap<import('ws').WebSocket, number>();
+
+  const scheduleConnectionRecovery = () => {
+    if (!petDesired || stopping || connectionLostTimer) return;
+    connectionLostTimer = setTimeout(() => {
+      connectionLostTimer = null;
+      if (petConnected || !petDesired || stopping) return;
+      const staleChild = petProcess;
+      if (staleChild && staleChild.exitCode === null) {
+        forceKillRuntime(staleChild);
+        if (petProcess === staleChild) petProcess = null;
+      }
+      scheduleRestart();
+    }, 18000);
+  };
+
+  heartbeatWatchdog = setInterval(() => {
+    const now = Date.now();
+    for (const ws of clients) {
+      if (now - (lastPing.get(ws) ?? now) > 10000) ws.terminate();
+    }
+  }, 5000);
+  heartbeatWatchdog.unref?.();
 
   wsServer.on('connection', (ws) => {
     clients.add(ws);
     petConnected = true;
+    if (connectionLostTimer) clearTimeout(connectionLostTimer);
+    connectionLostTimer = null;
+    lastPing.set(ws, Date.now());
     petEverConnected = true;
     restartAttempts = 0;
     for (const resolve of connectionWaiters) resolve();
     connectionWaiters.clear();
 
     ws.on('message', (data) => {
-      if (data.toString() === 'ping' && ws.readyState === ws.OPEN) ws.send('pong');
+      if (data.toString() === 'ping') {
+        lastPing.set(ws, Date.now());
+        if (ws.readyState === ws.OPEN) ws.send('pong');
+      }
     });
     ws.on('close', () => {
       clients.delete(ws);
       petConnected = clients.size > 0;
+      if (!petConnected) scheduleConnectionRecovery();
     });
     ws.on('error', () => {
       clients.delete(ws);
       petConnected = clients.size > 0;
+      if (!petConnected) scheduleConnectionRecovery();
     });
   });
 
@@ -148,6 +181,10 @@ async function startServer(): Promise<number> {
         }
       };
       closeWebSockets = () => {
+        if (heartbeatWatchdog) clearInterval(heartbeatWatchdog);
+        heartbeatWatchdog = null;
+        if (connectionLostTimer) clearTimeout(connectionLostTimer);
+        connectionLostTimer = null;
         for (const ws of clients) ws.close(1001, 'Pi pet host shutting down');
         wsServer.close();
       };
@@ -169,6 +206,10 @@ function stopServer(): void {
   broadcast = null;
   port = 0;
   petConnected = false;
+  if (heartbeatWatchdog) clearInterval(heartbeatWatchdog);
+  heartbeatWatchdog = null;
+  if (connectionLostTimer) clearTimeout(connectionLostTimer);
+  connectionLostTimer = null;
 }
 
 function isWsl(): boolean {
@@ -303,6 +344,8 @@ async function stopPet(): Promise<void> {
   petEverConnected = false;
   if (restartTimer) clearTimeout(restartTimer);
   restartTimer = null;
+  if (connectionLostTimer) clearTimeout(connectionLostTimer);
+  connectionLostTimer = null;
 
   const child = petProcess;
   if (!child || child.exitCode !== null) {
