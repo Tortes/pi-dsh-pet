@@ -143,6 +143,11 @@ function launchPet(size: string): void {
     cwd: PACKAGE_ROOT,
     stdio: 'ignore',
     windowsHide: true,
+    env: {
+      ...process.env,
+      PI_DSH_PET_PORT: String(port),
+      PI_DSH_PET_SIZE: size,
+    },
   });
 
   petProcess.on('exit', () => { petProcess = null; });
