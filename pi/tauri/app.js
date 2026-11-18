@@ -80,7 +80,7 @@ function handleMessage(raw) {
           ? '写代码'
           : '轻快记录';
       } else if (event.type === 'tool_end') {
-        animation = event.error ? '死掉了' : '轻快记录';
+        animation = event.error ? '被吓一跳' : '轻快记录';
       }
     } catch (error) {
       console.warn('[pi-dsh-pet] invalid event:', error);
