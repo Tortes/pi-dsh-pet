@@ -32,6 +32,30 @@ fn set_pet_bounds(
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct RuntimeConfig {
+    port: u16,
+    size: u32,
+}
+
+#[tauri::command]
+fn runtime_config() -> RuntimeConfig {
+    RuntimeConfig {
+        port: std::env::var("PI_DSH_PET_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        size: std::env::var("PI_DSH_PET_SIZE")
+            .ok()
+            .and_then(|v| match v.as_str() {
+                "small" => Some(260),
+                "large" => Some(540),
+                _ => Some(400),
+            })
+            .unwrap_or(400),
+    }
+}
+
 #[tauri::command]
 fn close_pet(app: tauri::AppHandle) {
     app.exit(0);
@@ -80,6 +104,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_ignore_cursor_events,
             set_pet_bounds,
+            runtime_config,
             close_pet
         ])
         .setup(move |app| {
