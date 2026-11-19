@@ -1,14 +1,18 @@
 # Pi + Rust/Tauri desktop pet
 
-Pi is the only lifecycle owner. The Windows Tauri executable is a child runtime and is not intended to be launched manually.
+Every Pi process that loads this extension registers with one shared local monitor. The monitor is a detached Node process that owns the asset/WebSocket server, aggregates progress from all registered Pi processes, and launches exactly one Windows Tauri pet. Do not launch the Tauri executable manually.
 
 ## Runtime flow
 
-1. Pi starts the extension and the extension starts a localhost HTTP/WebSocket server.
-2. Run `/pet` in Pi. The extension detects WSL, launches the Windows `pi-dsh-pet.exe`, and passes the server port and requested size as command-line arguments.
-3. Tauri loads the upstream animation config/assets from the Pi server, applies the configured physics, publishes its hit-test bounds, then shows its transparent always-on-top window.
-4. The extension waits for the WebSocket connection before reporting success.
-5. Run `/pet-stop` to request a graceful close. The extension uses `taskkill.exe` as a fallback if the runtime does not exit.
+1. Each Pi process starts the shared monitor if it is not already running, then registers its PID, project directory, and current Agent state.
+2. Run `/pet` in any registered Pi process. The shared monitor launches the single `pi-dsh-pet.exe` runtime and passes its fixed loopback port and requested size.
+3. Every registered Pi process reports Agent lifecycle and tool-execution events. A heartbeat keeps its registration alive; stale processes are removed automatically.
+4. The monitor broadcasts the full process snapshot and an aggregate priority state to Pet. Pet plays the corresponding animation and displays the selected process/task in a compact status bubble.
+5. Run `/pi-status` to list all registered Pi processes and their progress. `/pet-status` shows both Pet connectivity and the process list.
+6. Run `/pet-stop` in any Pi process to close the shared Pet. When the last Pi process unregisters (or its heartbeat expires), the monitor closes Pet and exits after a short grace period.
+7. The monitor listens only on `127.0.0.1` (default port `39471`; override with `PI_DSH_PET_PORT`). If multiple Pi processes start together, the fixed-port bind elects one monitor.
+
+Only Pi processes that load this extension can report Agent progress. A process without the extension can be detected by OS process tools, but its internal Agent/tool progress is not exposed to this monitor.
 
 Do not double-click the Windows executable. It requires the port argument and the Pi asset/event server.
 
@@ -54,11 +58,12 @@ The current implementation uses full monitor rectangles. Taskbar/work-area avoid
 
 ## Host/runtime reliability
 
-- The WebSocket heartbeat runs every 2 seconds. A missing pong closes the socket and starts bounded reconnect attempts.
-- If the Pi host disappears, the Windows runtime closes itself after the reconnect grace period instead of remaining as an orphan.
-- If the Windows runtime exits unexpectedly after a successful connection, Pi restarts it with exponential backoff (up to five attempts).
-- A failed recovery child is terminated before the next attempt.
-- `session_shutdown` requests a graceful close; process exit also broadcasts shutdown and closes the local server.
+- The shared monitor is detached from the Pi process that happened to start it first; another Pi process can continue reporting if that process exits.
+- Pi agents heartbeat every 5 seconds. The monitor removes registrations after 16 seconds without a heartbeat.
+- The Pet WebSocket heartbeat runs every 2 seconds. A missing pong closes the socket and starts bounded reconnect attempts.
+- If the Pet runtime exits unexpectedly after a successful connection, the monitor restarts it with exponential backoff (up to five attempts).
+- When no Pi agents remain, the monitor waits 20 seconds, closes Pet, and exits. A later Pi process can start a fresh monitor.
+- The monitor listens only on loopback; it is not exposed to the LAN.
 
 ## WSL -> Windows
 
@@ -76,6 +81,7 @@ Set `PI_DSH_PET_BIN` to override the runtime executable path. By default the ext
     /pet small
     /pet large
     /pet-status
+    /pi-status
     /pet-stop
 
 ## Build
