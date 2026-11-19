@@ -9,10 +9,12 @@ import { WebSocketServer } from 'ws';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = dirname(dirname(__dirname));
 const PET_ASSETS = join(PACKAGE_ROOT, 'dsh-pet', 'assets');
-const configuredPort = Number(process.env.PI_DSH_PET_PORT || 39471);
+const PROTOCOL_VERSION = 2;
+const MONITOR_STARTED_AT = Date.now();
+const configuredPort = Number(process.env.PI_DSH_PET_PORT || 39472);
 const PORT = Number.isInteger(configuredPort) && configuredPort > 1024 && configuredPort <= 65535
   ? configuredPort
-  : 39471;
+  : 39472;
 const AGENT_TTL_MS = 16000;
 const IDLE_EXIT_MS = 20000;
 const TERMINAL_VISIBLE_MS = 9000;
@@ -23,6 +25,7 @@ const STATUS_PRIORITY = { waiting: 60, working: 50, thinking: 40, error: 30, res
 const VALID_STATES = new Set(Object.keys(STATUS_PRIORITY));
 
 const agents = new Map();
+const petLeases = new Map();
 const clients = new Set();
 const connectionWaiters = new Set();
 let server;
@@ -49,6 +52,24 @@ function sendJson(res, status, value) {
 
 function safeText(value, max = 180) {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+function refreshPetDesired() {
+  petDesired = petLeases.size > 0;
+}
+
+function clearSupervisorTimers() {
+  if (restartTimer) clearTimeout(restartTimer);
+  restartTimer = null;
+  if (connectionLostTimer) clearTimeout(connectionLostTimer);
+  connectionLostTimer = null;
+}
+
+function releasePetLease(ownerId) {
+  if (petLeases.delete(ownerId)) {
+    refreshPetDesired();
+    if (!petDesired) void stopPetRuntime();
+  }
 }
 
 async function readJson(req) {
@@ -183,6 +204,8 @@ function upsertAgent(input, event = false) {
     updatedAt: event || stateChanged || eventChanged ? now : previous?.updatedAt ?? now,
   };
   agents.set(id, agent);
+  const lease = petLeases.get(id);
+  if (lease) lease.lastSeen = now;
   clearIdleExit();
   return agent;
 }
@@ -193,9 +216,12 @@ function pruneAgents() {
   for (const [id, agent] of agents) {
     if (now - agent.lastSeen > AGENT_TTL_MS) {
       agents.delete(id);
+      petLeases.delete(id);
       changed = true;
     }
   }
+  refreshPetDesired();
+  if (!petDesired && petProcess) void stopPetRuntime();
   if (changed) {
     broadcastSnapshot();
     if (agents.size === 0) scheduleIdleExit();
@@ -232,20 +258,27 @@ function forceKillRuntime(child) {
       windowsHide: true,
     });
   } else if (isWsl()) {
-    spawn('taskkill.exe', ['/im', 'pi-dsh-pet.exe', '/t', '/f'], {
+    // Do not use taskkill /IM: that can terminate another Pet instance owned by
+    // a different monitor. Match the exact monitor port passed to this runtime.
+    const command = "$port='" + PORT + "'; " +
+      "Get-CimInstance Win32_Process -Filter \"Name='pi-dsh-pet.exe'\" | " +
+      "Where-Object { $_.CommandLine -match ('(^|\\s)' + $port + '(\\s|$)') } | " +
+      "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
+    spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
       stdio: 'ignore',
       windowsHide: true,
     });
   } else {
-    child.kill();
+    child.kill('SIGTERM');
   }
 }
 
 function scheduleRestart() {
   if (!petDesired || restartTimer) return;
   if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
-    petDesired = false;
-    console.error('[pi-dsh-pet] runtime restart limit reached; use /pet to start it again');
+    petLeases.clear();
+    refreshPetDesired();
+    console.error('[pi-dsh-pet] runtime restart limit reached; all Pet leases were released. Use /pet to start it again.');
     return;
   }
   const delay = Math.min(500 * (2 ** restartAttempts), 8000);
@@ -340,24 +373,23 @@ async function waitForPetConnection(timeoutMs = 15000) {
   });
 }
 
-async function startPet(size) {
-  if (!agents.size) throw new Error('No Pi processes are registered yet');
+async function startPet(size, ownerId) {
+  const owner = safeText(ownerId, 100);
+  if (!owner || !agents.has(owner)) throw new Error('Pet lease owner is not a registered Pi process');
   petSize = SIZE_MAP[size] ? size : 'normal';
-  petDesired = true;
+  petLeases.set(owner, { ownerId: owner, lastSeen: Date.now(), size: petSize });
+  refreshPetDesired();
   petEverConnected = petConnected || petEverConnected;
   restartAttempts = 0;
+  clearSupervisorTimers();
   await launchPet();
   await waitForPetConnection();
-  return { ok: true, connected: petConnected, size: petSize };
+  return { ok: true, connected: petConnected, size: petSize, leaseCount: petLeases.size };
 }
 
-async function stopPet() {
-  petDesired = false;
+async function stopPetRuntime() {
   petEverConnected = false;
-  if (restartTimer) clearTimeout(restartTimer);
-  restartTimer = null;
-  if (connectionLostTimer) clearTimeout(connectionLostTimer);
-  connectionLostTimer = null;
+  clearSupervisorTimers();
 
   // A Pet may have reconnected after the monitor itself restarted, in which
   // case there is a WebSocket client but no child handle owned by this monitor.
@@ -367,7 +399,7 @@ async function stopPet() {
   const child = petProcess;
   if (!child || child.exitCode !== null) {
     petProcess = null;
-    petConnected = clients.size > 0;
+    petConnected = false;
     return;
   }
   await new Promise((resolve) => {
@@ -380,6 +412,12 @@ async function stopPet() {
   if (child.exitCode === null) forceKillRuntime(child);
   if (petProcess === child) petProcess = null;
   petConnected = false;
+}
+
+async function stopPet() {
+  petLeases.clear();
+  refreshPetDesired();
+  await stopPetRuntime();
 }
 
 const wsServer = new WebSocketServer({ noServer: true });
@@ -427,11 +465,15 @@ server = createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         service: 'pi-dsh-pet-monitor',
-        version: 1,
+        version: PROTOCOL_VERSION,
+        protocolVersion: PROTOCOL_VERSION,
+        pid: process.pid,
+        startedAt: MONITOR_STARTED_AT,
         port: PORT,
         agents: agents.size,
         petConnected,
         petDesired,
+        petLeaseCount: petLeases.size,
       });
       return;
     }
@@ -476,20 +518,23 @@ server = createServer(async (req, res) => {
       }
       if (pathname === '/agents/unregister') {
         const id = safeText(body.id, 100);
-        if (id) agents.delete(id);
+        if (id) {
+          agents.delete(id);
+          releasePetLease(id);
+        }
         broadcastSnapshot();
         if (agents.size === 0) scheduleIdleExit();
         sendJson(res, 200, { ok: true });
         return;
       }
       if (pathname === '/pet/start') {
-        const result = await startPet(safeText(body.size, 20));
+        const result = await startPet(safeText(body.size, 20), body.ownerId);
         sendJson(res, 200, result);
         return;
       }
       if (pathname === '/pet/stop') {
-        await stopPet();
-        sendJson(res, 200, { ok: true, connected: false });
+        await stopPet(); // Explicit /pet-stop revokes every owner's lease.
+        sendJson(res, 200, { ok: true, connected: false, leaseCount: 0 });
         return;
       }
     }
