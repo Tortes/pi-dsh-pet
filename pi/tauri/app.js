@@ -355,7 +355,7 @@ function renderAgentSnapshot(data) {
     statusBubble.hidden = false;
     if (selected) {
       statusTitle.textContent = agents.length + ' 个 Pi 在线 · ' +
-        Number(data.activeCount ?? 0) + ' 个执行中 · 最近 ' +
+        Number(data.activeCount ?? 0) + ' 个活跃 · 最近 ' +
         (selected.project || 'Pi') + ' (PID ' + selected.pid + ')';
       const stateLabel = STATUS_LABELS[selected.state] ?? '运行中';
       statusDetail.textContent = stateLabel + (selected.task ? ' · ' + selected.task : '');
