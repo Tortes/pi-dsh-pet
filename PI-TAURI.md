@@ -14,7 +14,7 @@ Every Pi process that loads this extension registers with one shared local monit
 
 Only Pi processes that load this extension can report Agent progress. A process without the extension can be detected by OS process tools, but its internal Agent/tool progress is not exposed to this monitor.
 
-Do not double-click the Windows executable. It requires the port argument and the Pi asset/event server.
+Do not double-click the Windows executable. It requires the shared monitor port and monitor asset/event server.
 
 ## Agent animation state machine
 
@@ -67,7 +67,7 @@ The current implementation uses full monitor rectangles. Taskbar/work-area avoid
 
 ## WSL -> Windows
 
-The extension detects WSL using `WSL_DISTRO_NAME`, `WSL_INTEROP`, or the kernel release string. It selects `pi-dsh-pet.exe` in WSL and Windows, and `pi-dsh-pet` on native Linux.
+The shared monitor detects WSL using `WSL_DISTRO_NAME`, `WSL_INTEROP`, or the kernel release string. It selects `pi-dsh-pet.exe` in WSL and Windows, and `pi-dsh-pet` on native Linux.
 
 Set `PI_DSH_PET_BIN` to override the runtime executable path. By default the extension searches:
 
