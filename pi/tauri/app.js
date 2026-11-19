@@ -347,7 +347,7 @@ let lastAggregateState = null;
 function renderAgentSnapshot(data) {
   const agents = Array.isArray(data.agents) ? data.agents : [];
   const aggregate = data.aggregate ?? null;
-  const selected = aggregate?.agent ?? null;
+  const selected = data.latest ?? aggregate?.agent ?? null;
 
   if (agents.length === 0) {
     statusBubble.hidden = true;
@@ -355,8 +355,8 @@ function renderAgentSnapshot(data) {
     statusBubble.hidden = false;
     if (selected) {
       statusTitle.textContent = agents.length + ' 个 Pi 进程 · ' +
-        (selected.project || ('PID ' + selected.pid));
-      const stateLabel = STATUS_LABELS[aggregate.state] ?? '运行中';
+        (selected.project || 'Pi') + ' · PID ' + selected.pid;
+      const stateLabel = STATUS_LABELS[selected.state] ?? '运行中';
       statusDetail.textContent = stateLabel + (selected.task ? ' · ' + selected.task : '');
     } else {
       statusTitle.textContent = agents.length + ' 个 Pi 进程在线';
