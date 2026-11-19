@@ -32,8 +32,8 @@ Animation names are read from `animations.events.workStatus` in `dsh-pet/assets/
 
 Right-click the visible pet to open a transparent-window HTML context menu.
 
-- The menu is generated from the loaded upstream animation config: idle, turn, drag, click responses, movement actions, categories, and event animation slots.
-- Hovering a category opens a cascading submenu; submenus flip left when there is insufficient room on the right and are clamped to the Tauri viewport.
+- The first-level menu directly lists animation categories (idle, turn, drag, click responses, movement actions, custom categories, and event animation slots); there is no redundant single-item “Actions” wrapper.
+- Hovering a category opens its animation submenu. Panels are positioned in viewport coordinates, flip to the left when needed, avoid overlapping already-open panels, and stay inside the Tauri viewport.
 - Selecting an animation plays it once, then returns to the configured idle pool.
 - Click outside or press Escape to close.
 - While the menu is open, Pi tells the Rust host to disable click-through for the whole transparent window. Closing the menu restores normal sprite-only hit testing.
