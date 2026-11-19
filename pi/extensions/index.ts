@@ -81,6 +81,7 @@ async function ensureMonitor(): Promise<any> {
       windowsHide: true,
       env: { ...process.env, PI_DSH_PET_PORT: String(MONITOR_PORT) },
     });
+    child.once('error', () => {});
     child.unref();
   } catch {
     /* Another Pi process may win the bind race; the health check below decides. */
@@ -207,8 +208,6 @@ async function unregisterAgent(): Promise<void> {
 
 export default function (pi: ExtensionAPI) {
   process.once('exit', clearLocalTimers);
-  process.once('SIGINT', () => { void unregisterAgent(); });
-  process.once('SIGTERM', () => { void unregisterAgent(); });
 
   pi.on('session_start', async (_event, ctx) => {
     try {
