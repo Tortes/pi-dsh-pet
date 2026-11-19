@@ -35,9 +35,16 @@ fn process_is_running(pid: u32) -> bool {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 fn process_is_running(pid: u32) -> bool {
     PathBuf::from("/proc").join(pid.to_string()).exists()
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
+fn process_is_running(_pid: u32) -> bool {
+    // On platforms without a portable PID probe, retain old profiles rather
+    // than risk deleting a live WebView's data directory.
+    true
 }
 
 /// Each process gets a unique WebView2 profile. A force-killed WebView can
@@ -593,7 +600,12 @@ pub fn run() {
 
     let mut context = tauri::generate_context!();
     context.config_mut().app.app_directories_override =
-        Some(tauri::utils::config::AppDirectoriesOverride::Root(webview_data_dir.clone()));
+        Some(tauri::utils::config::AppDirectoriesOverride::Directories(
+            tauri::utils::config::AppDirectoryOverrides {
+                local_data: Some(webview_data_dir.clone()),
+                ..Default::default()
+            },
+        ));
 
     let result = tauri::Builder::default()
         .manage(state.clone())
