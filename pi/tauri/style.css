@@ -41,3 +41,72 @@ body {
   background: transparent;
   pointer-events: none;
 }
+
+
+.pet-context-menu {
+  position: fixed;
+  z-index: 2147483647;
+  pointer-events: auto;
+  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  font-size: 13px;
+  color: #f3f4f6;
+  user-select: none;
+}
+
+.pet-context-menu-panel {
+  position: absolute;
+  min-width: 176px;
+  max-width: min(280px, calc(100vw - 12px));
+  max-height: min(460px, calc(100vh - 12px));
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+  background: rgba(30, 32, 38, 0.97);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(16px);
+}
+
+.pet-context-menu-panel[hidden] {
+  display: none;
+}
+
+.pet-context-menu-item {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 5px;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.pet-context-menu-item:hover,
+.pet-context-menu-item:focus-visible {
+  background: rgba(112, 156, 235, 0.28);
+}
+
+.pet-context-menu-arrow {
+  color: rgba(235, 239, 247, 0.6);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.pet-context-menu-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pet-context-menu-panel::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.22);
+}
