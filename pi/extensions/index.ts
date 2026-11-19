@@ -196,8 +196,7 @@ function formatAgent(agent: {
 }
 
 async function getMonitorSnapshot(): Promise<{ agents: any[]; petConnected: boolean; petDesired: boolean }> {
-  await ensureMonitor();
-  if (!agentRegistered) await registerAgent();
+  await registerAgent(); // Re-register after a monitor restart; the local flag cannot prove remote state survived.
   return monitorRequest('/agents');
 }
 
