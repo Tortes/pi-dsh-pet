@@ -380,7 +380,8 @@ function acquirePetLease(size, ownerId) {
   petLeases.set(owner, { ownerId: owner, lastSeen: Date.now(), size: petSize });
   refreshPetDesired();
   restartAttempts = 0;
-  clearSupervisorTimers();
+  if (restartTimer) clearTimeout(restartTimer);
+  restartTimer = null;
   return { ok: true, desired: petDesired, leaseCount: petLeases.size, size: petSize };
 }
 
@@ -388,7 +389,13 @@ async function startPet(size, ownerId) {
   const lease = acquirePetLease(size, ownerId);
   petEverConnected = petConnected || petEverConnected;
   await launchPet();
-  await waitForPetConnection();
+  try {
+    await waitForPetConnection();
+  } catch (error) {
+    // Also recover a runtime that spawned but never completed WebView startup.
+    scheduleConnectionRecovery();
+    throw error;
+  }
   return { ...lease, connected: petConnected };
 }
 
