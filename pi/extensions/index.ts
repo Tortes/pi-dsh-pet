@@ -8,10 +8,11 @@ const __filename = fileURLToPath(import.meta.url);
 const PI_DIR = dirname(dirname(__filename));
 const PACKAGE_ROOT = dirname(PI_DIR);
 const MONITOR_SERVER = join(PI_DIR, 'monitor', 'server.mjs');
-const configuredMonitorPort = Number(process.env.PI_DSH_PET_PORT || 39471);
+const MONITOR_PROTOCOL_VERSION = 2;
+const configuredMonitorPort = Number(process.env.PI_DSH_PET_PORT || 39472);
 const MONITOR_PORT = Number.isInteger(configuredMonitorPort) && configuredMonitorPort > 1024 && configuredMonitorPort <= 65535
   ? configuredMonitorPort
-  : 39471;
+  : 39472;
 const MONITOR_URL = 'http://127.0.0.1:' + MONITOR_PORT;
 const AGENT_ID = String(process.pid) + '-' + randomUUID();
 const PROJECT = basename(process.cwd()) || 'Pi';
@@ -68,40 +69,56 @@ async function monitorRequest(
   return data;
 }
 
-/** Start one detached local monitor if none is listening; concurrent Pi processes race on one loopback port. */
+/** Start one detached monitor. Node's detached POSIX spawn creates a new session (setsid). */
 async function ensureMonitor(): Promise<any> {
-  try {
+  const readHealth = async () => {
     const health = await monitorRequest('/health');
-    if (health.service === 'pi-dsh-pet-monitor' && health.version === 1) return health;
-  } catch {
-    /* No monitor yet (or it is restarting). */
-  }
+    if (health.service !== 'pi-dsh-pet-monitor') {
+      throw new Error('Port ' + MONITOR_PORT + ' is occupied by an unrelated service');
+    }
+    if (health.protocolVersion !== MONITOR_PROTOCOL_VERSION) {
+      throw new Error(
+        'Incompatible Pi Pet monitor on port ' + MONITOR_PORT +
+        ' (protocol ' + String(health.protocolVersion ?? health.version) +
+        ', expected ' + MONITOR_PROTOCOL_VERSION + '). Stop the stale monitor or choose another PI_DSH_PET_PORT.',
+      );
+    }
+    return health;
+  };
 
   try {
-    const child = spawn(process.execPath, [MONITOR_SERVER], {
-      cwd: PACKAGE_ROOT,
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-      env: { ...process.env, PI_DSH_PET_PORT: String(MONITOR_PORT) },
-    });
-    child.once('error', () => {});
-    child.unref();
-  } catch {
-    /* Another Pi process may win the bind race; the health check below decides. */
+    return await readHealth();
+  } catch (error) {
+    if (String(error).includes('Incompatible Pi Pet monitor') || String(error).includes('unrelated service')) {
+      throw error;
+    }
   }
+
+  let spawnError: Error | null = null;
+  const child = spawn(process.execPath, [MONITOR_SERVER], {
+    cwd: PACKAGE_ROOT,
+    detached: true,
+    stdio: ['ignore', 'ignore', 'ignore'],
+    windowsHide: true,
+    env: { ...process.env, PI_DSH_PET_PORT: String(MONITOR_PORT) },
+  });
+  child.once('error', (error) => { spawnError = error; });
+  child.unref();
 
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
     await delay(200);
     try {
-      const health = await monitorRequest('/health');
-      if (health.service === 'pi-dsh-pet-monitor' && health.version === 1) return health;
-    } catch {
-      /* Keep waiting for the detached monitor to bind. */
+      return await readHealth();
+    } catch (error) {
+      if (String(error).includes('Incompatible Pi Pet monitor') || String(error).includes('unrelated service')) {
+        throw error;
+      }
     }
+    if (spawnError) throw new Error('Unable to spawn Pi monitor: ' + spawnError.message);
   }
-  throw new Error('Unable to start the shared Pi monitor on 127.0.0.1:' + MONITOR_PORT);
+  throw new Error('Unable to start the shared Pi monitor on 127.0.0.1:' + MONITOR_PORT +
+    (spawnError ? ': ' + spawnError.message : ''));
 }
 
 function agentPayload() {
@@ -324,7 +341,7 @@ export default function (pi: ExtensionAPI) {
         await registerAgent();
         const requested = (args ?? '').trim().toLowerCase();
         const size = requested in SIZE_MAP ? requested : 'normal';
-        await monitorRequest('/pet/start', 'POST', { size });
+        await monitorRequest('/pet/start', 'POST', { size, ownerId: AGENT_ID });
         ctx.ui.notify('Shared Pi Pet is running (' + size + ')', 'info');
       } catch (error) {
         ctx.ui.notify('Pet start failed: ' + String(error), 'error');
@@ -372,7 +389,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       try {
         await ensureMonitor();
-        await monitorRequest('/pet/stop', 'POST', {});
+        await monitorRequest('/pet/stop', 'POST', { ownerId: AGENT_ID, all: true });
         ctx.ui.notify('Shared Pi Pet closed', 'info');
       } catch (error) {
         ctx.ui.notify('Pet stop failed: ' + String(error), 'error');
