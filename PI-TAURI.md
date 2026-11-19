@@ -27,6 +27,18 @@ The extension maps Pi lifecycle events into the six upstream DSH work-status slo
 
 Animation names are read from `animations.events.workStatus` in `dsh-pet/assets/config.jsonc`; no animation filenames are hard-coded in the renderer. Missing/invalid status slots are logged and leave the current animation unchanged.
 
+
+## Context menu
+
+Right-click the visible pet to open a transparent-window HTML context menu.
+
+- The menu is generated from the loaded upstream animation config: idle, turn, drag, click responses, movement actions, categories, and event animation slots.
+- Hovering a category opens a cascading submenu; submenus flip left when there is insufficient room on the right and are clamped to the Tauri viewport.
+- Selecting an animation plays it once, then returns to the configured idle pool.
+- Click outside or press Escape to close.
+- While the menu is open, Pi tells the Rust host to disable click-through for the whole transparent window. Closing the menu restores normal sprite-only hit testing.
+- DSH-host-specific actions (balance, weather, chat, todo, third-party host menu registrations, and sleep state) are not exposed yet because this Pi runtime does not currently implement their upstream host endpoints.
+
 ## Drag, throw, and display geometry
 
 The Windows native pointer loop owns drag and throw input so the drag continues even when the cursor leaves the transparent pet window.
