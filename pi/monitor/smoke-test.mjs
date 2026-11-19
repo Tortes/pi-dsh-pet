@@ -87,23 +87,66 @@ try {
   assert.equal(registered.agents.length, 1);
   assert.equal(registered.agents[0].pid, 12345);
 
+  const secondAgent = {
+    id: 'smoke-agent-2',
+    pid: 23456,
+    project: 'second-project',
+    cwd: '/tmp/second-project',
+    state: 'idle',
+    task: null,
+    eventType: 'session_start',
+  };
+  await post('/agents/register', secondAgent);
+  const secondRegistered = await nextSnapshot();
+  assert.equal(secondRegistered.agents.length, 2);
+
   await post('/agents/event', {
     ...agent,
     state: 'working',
     task: 'bash · git status',
     eventType: 'tool_execution_start',
   });
-  const progress = await nextSnapshot();
-  assert.equal(progress.latest.state, 'working');
-  assert.equal(progress.latest.task, 'bash · git status');
-  assert.equal(progress.aggregate.state, 'working');
-  assert.equal(progress.activeCount, 1);
+  const firstProgress = await nextSnapshot();
+  assert.equal(firstProgress.latest.state, 'working');
+  assert.equal(firstProgress.latest.task, 'bash · git status');
+  assert.equal(firstProgress.aggregate.state, 'working');
+  assert.equal(firstProgress.activeCount, 1);
+
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await post('/agents/event', {
+    ...secondAgent,
+    state: 'thinking',
+    task: null,
+    eventType: 'turn_start',
+  });
+  const secondProgress = await nextSnapshot();
+  assert.equal(secondProgress.latest.pid, 23456);
+  assert.equal(secondProgress.latest.state, 'thinking');
+  assert.equal(secondProgress.activeCount, 2);
+  assert.equal(secondProgress.aggregate.state, 'working');
+
+  // A heartbeat must recover an event missed while the Pi process was reconnecting.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await post('/agents/heartbeat', {
+    ...agent,
+    state: 'success',
+    task: null,
+    eventType: 'agent_end',
+  });
+  const recovered = await nextSnapshot();
+  assert.equal(recovered.latest.pid, 12345);
+  assert.equal(recovered.latest.state, 'success');
+  assert.equal(recovered.latest.eventType, 'agent_end');
+  assert.equal(recovered.activeCount, 1);
 
   const query = await (await fetch(base + '/agents')).json();
-  assert.equal(query.agents.length, 1);
-  assert.equal(query.agents[0].state, 'working');
+  assert.equal(query.agents.length, 2);
+  assert.equal(query.agents.find((item) => item.pid === 12345).state, 'success');
 
   await post('/agents/unregister', { id: 'smoke-agent' });
+  const firstRemoved = await nextSnapshot();
+  assert.equal(firstRemoved.agents.length, 1);
+  await post('/agents/unregister', { id: 'smoke-agent-2' });
   const removed = await nextSnapshot();
   assert.equal(removed.agents.length, 0);
 
