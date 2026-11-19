@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,7 @@ const VALID_STATES = new Set(Object.keys(STATUS_PRIORITY));
 
 const agents = new Map();
 const clients = new Set();
+const connectionWaiters = new Set();
 let server;
 let petProcess = null;
 let petConnected = false;
@@ -112,7 +113,7 @@ function currentAggregate(now = Date.now()) {
 
 function snapshot() {
   const list = [...agents.values()]
-    .sort((a, b) => b.lastSeen - a.lastSeen)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
     .map(agentView);
   return { type: 'agents_snapshot', agents: list, aggregate: currentAggregate() };
 }
@@ -191,24 +192,10 @@ function pruneAgents() {
 function isWsl() {
   if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
   try {
-    return (awaitReadRelease()).includes('microsoft');
+    return readFileSync('/proc/sys/kernel/osrelease', 'utf8').toLowerCase().includes('microsoft');
   } catch {
     return false;
   }
-}
-
-function awaitReadRelease() {
-  // Keep this synchronous and dependency-free; the WSL marker is only a fallback.
-  try {
-    return requireReadFile('/proc/sys/kernel/osrelease').toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
-function requireReadFile(path) {
-  // Dynamic import is unnecessary here; readFileSync is loaded lazily to keep the hot path small.
-  return process.getBuiltinModule('node:fs').readFileSync(path, 'utf8');
 }
 
 function findPetExecutable() {
@@ -318,7 +305,12 @@ async function waitForPetConnection(timeoutMs = 15000) {
   await new Promise((resolve, reject) => {
     const cleanup = () => {
       clearTimeout(timeout);
+      connectionWaiters.delete(onConnected);
       child?.removeListener('exit', onExit);
+    };
+    const onConnected = () => {
+      cleanup();
+      resolve();
     };
     const onExit = () => {
       cleanup();
@@ -328,6 +320,7 @@ async function waitForPetConnection(timeoutMs = 15000) {
       cleanup();
       reject(new Error('Windows pet started but did not connect to Pi monitor'));
     }, timeoutMs);
+    connectionWaiters.add(onConnected);
     child?.once('exit', onExit);
   });
 }
@@ -379,6 +372,8 @@ wsServer.on('connection', (ws) => {
   clients.add(ws);
   petConnected = true;
   petEverConnected = true;
+  for (const resolve of connectionWaiters) resolve();
+  connectionWaiters.clear();
   if (connectionLostTimer) clearTimeout(connectionLostTimer);
   connectionLostTimer = null;
   ws.send(JSON.stringify(snapshot()));
@@ -514,6 +509,7 @@ async function shutdown() {
   clearIdleExit();
   await stopPet();
   for (const ws of clients) ws.close(1001, 'Pi monitor shutting down');
+  wsServer.close();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500).unref?.();
 }
