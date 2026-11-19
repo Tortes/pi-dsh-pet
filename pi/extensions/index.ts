@@ -168,7 +168,7 @@ function toolTask(event: unknown): string {
     const target = args.path ?? args.filePath ?? args.file_path ?? args.filename;
     if (typeof target === 'string' && target) return name + ' · ' + basename(target);
     if (name === 'bash' && typeof args.command === 'string') {
-      const parts = args.command.trim().split(/[\\s|&;]+/).filter(Boolean);
+      const parts = args.command.trim().split(/[\s|&;]+/).filter(Boolean);
       const safeCommands = new Set([
         'git', 'npm', 'pnpm', 'yarn', 'cargo', 'rustc', 'python', 'python3',
         'pytest', 'node', 'rg', 'fd', 'ls', 'grep', 'make', 'cmake', 'go',
