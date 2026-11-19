@@ -129,94 +129,139 @@ function animationMenuTree() {
     }
     add(MENU_EVENT_LABELS[key] ?? key, names);
   }
-  return groups.length ? [{ label: '动作', children: groups }] : [];
+  // The categories themselves are the root menu. A single "动作" wrapper only adds
+  // an unnecessary hover level and makes the menu look like it has one item.
+  return groups;
 }
 
-let activeMenu = null;
+let activeMenuClose = null;
 function closeContextMenu() {
-  if (!activeMenu) return;
-  activeMenu.remove();
-  activeMenu = null;
-  invoke('set_menu_open', { open: false }).catch(() => {});
+  if (!activeMenuClose) return;
+  const close = activeMenuClose;
+  activeMenuClose = null;
+  close();
 }
 
 function openContextMenu(event) {
-  if (activeMenu || !config) return;
+  if (activeMenuClose || !config) return;
   event.preventDefault();
   event.stopPropagation();
   const tree = animationMenuTree();
   if (!tree.length) return;
 
+  // Use a viewport-origin root, like the upstream menu: each cascading panel is
+  // positioned in viewport coordinates, so left/right flipping is unambiguous.
   const rootMenu = document.createElement('div');
   rootMenu.className = 'pet-context-menu';
+  rootMenu.style.left = '0px';
+  rootMenu.style.top = '0px';
   rootMenu.addEventListener('contextmenu', e => e.preventDefault());
-  const columns = [];
-  const opened = new Map();
+
+  const openChild = new Map();
+  let closed = false;
   let leaveTimer = null;
+
   const cancelLeave = () => {
     if (leaveTimer !== null) window.clearTimeout(leaveTimer);
     leaveTimer = null;
   };
   const scheduleLeave = () => {
     cancelLeave();
-    leaveTimer = window.setTimeout(closeContextMenu, 180);
+    leaveTimer = window.setTimeout(closeContextMenu, 200);
   };
 
-  const hideChildren = panel => {
-    const child = opened.get(panel);
-    if (!child) return;
-    opened.delete(panel);
-    child.hidden = true;
-    hideChildren(child);
+  const hideChain = panel => {
+    panel.hidden = true;
+    const child = openChild.get(panel);
+    if (child) {
+      openChild.delete(panel);
+      hideChain(child);
+    }
   };
 
   const placeChild = (child, item) => {
     child.hidden = false;
     const itemRect = item.getBoundingClientRect();
-    const menuRect = rootMenu.getBoundingClientRect();
+    const parentRect = item.parentElement.getBoundingClientRect();
     const width = child.offsetWidth;
     const height = child.offsetHeight;
     const gap = 4;
-    let left = itemRect.right - menuRect.left + gap;
-    if (menuRect.left + left + width > window.innerWidth - 6) {
-      left = itemRect.left - menuRect.left - width - gap;
+    const minLeft = 4;
+    const minTop = 4;
+    const maxLeft = Math.max(minLeft, window.innerWidth - width - 4);
+    const maxTop = Math.max(minTop, window.innerHeight - height - 4);
+    const clampLeft = value => Math.max(minLeft, Math.min(value, maxLeft));
+    const clampTop = value => Math.max(minTop, Math.min(value, maxTop));
+
+    const others = Array.from(rootMenu.querySelectorAll('.pet-context-menu-panel'))
+      .filter(panel => panel !== child && !panel.hidden)
+      .map(panel => panel.getBoundingClientRect());
+    const overlaps = (left, top) => others.some(rect =>
+      left < rect.right && left + width > rect.left &&
+      top < rect.bottom && top + height > rect.top
+    );
+    const candidates = [
+      { left: parentRect.right + gap, top: itemRect.top },
+      { left: parentRect.left - width - gap, top: itemRect.top },
+      { left: parentRect.right + gap, top: parentRect.top },
+      { left: parentRect.left - width - gap, top: parentRect.top },
+    ];
+
+    let position = candidates.find(candidate =>
+      candidate.left >= minLeft && candidate.left <= maxLeft &&
+      candidate.top >= minTop && candidate.top <= maxTop &&
+      !overlaps(candidate.left, candidate.top)
+    );
+    if (!position) {
+      position = candidates
+        .map(candidate => ({ left: clampLeft(candidate.left), top: clampTop(candidate.top) }))
+        .find(candidate => !overlaps(candidate.left, candidate.top));
     }
-    left = Math.max(4, Math.min(left, window.innerWidth - menuRect.left - width - 4));
-    let top = itemRect.top - menuRect.top;
-    top = Math.max(4, Math.min(top, window.innerHeight - menuRect.top - height - 4));
-    child.style.left = left + 'px';
-    child.style.top = top + 'px';
+    if (!position) {
+      position = {
+        left: clampLeft(parentRect.right + gap),
+        top: clampTop(itemRect.top),
+      };
+    }
+
+    child.style.left = position.left + 'px';
+    child.style.top = position.top + 'px';
   };
 
   const buildPanel = nodes => {
     const panel = document.createElement('div');
     panel.className = 'pet-context-menu-panel';
     panel.hidden = true;
-    panel.addEventListener('mouseenter', cancelLeave);
-    panel.addEventListener('mouseleave', scheduleLeave);
-    columns.push(panel);
+    rootMenu.appendChild(panel);
+
     for (const node of nodes) {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'pet-context-menu-item';
+
       const label = document.createElement('span');
       label.textContent = node.label;
       item.appendChild(label);
+
       if (Array.isArray(node.children)) {
         item.classList.add('has-children');
         const arrow = document.createElement('span');
         arrow.className = 'pet-context-menu-arrow';
         arrow.textContent = '›';
         item.appendChild(arrow);
+
         const child = buildPanel(node.children);
         item.addEventListener('mouseenter', () => {
-          const previous = opened.get(panel);
-          if (previous && previous !== child) hideChildren(previous);
-          opened.set(panel, child);
+          const previous = openChild.get(panel);
+          if (previous && previous !== child) hideChain(previous);
+          openChild.set(panel, child);
           placeChild(child, item);
         });
       } else {
-        item.addEventListener('mouseenter', () => hideChildren(panel));
+        item.addEventListener('mouseenter', () => {
+          const previous = openChild.get(panel);
+          if (previous) hideChain(previous);
+        });
         item.addEventListener('click', () => {
           closeContextMenu();
           if (node.anim) play(node.anim, false);
@@ -224,39 +269,44 @@ function openContextMenu(event) {
       }
       panel.appendChild(item);
     }
-    rootMenu.appendChild(panel);
     return panel;
   };
 
   const rootPanel = buildPanel(tree);
   rootPanel.hidden = false;
-  rootPanel.style.left = '0px';
-  rootPanel.style.top = '0px';
+  rootPanel.style.left = '';
+  rootPanel.style.top = '';
   document.body.appendChild(rootMenu);
-  const x = event.clientX;
-  const y = event.clientY;
+
   const maxX = Math.max(4, window.innerWidth - rootPanel.offsetWidth - 4);
   const maxY = Math.max(4, window.innerHeight - rootPanel.offsetHeight - 4);
-  rootMenu.style.left = Math.max(4, Math.min(x, maxX)) + 'px';
-  rootMenu.style.top = Math.max(4, Math.min(y, maxY)) + 'px';
-  activeMenu = rootMenu;
-  void invoke('set_menu_open', { open: true });
+  rootPanel.style.left = Math.max(4, Math.min(event.clientX, maxX)) + 'px';
+  rootPanel.style.top = Math.max(4, Math.min(event.clientY, maxY)) + 'px';
 
-  rootMenu.addEventListener('mouseover', cancelLeave);
   const onOutside = e => {
     if (!rootMenu.contains(e.target)) closeContextMenu();
   };
   const onKey = e => {
     if (e.key === 'Escape') closeContextMenu();
   };
-  document.addEventListener('pointerdown', onOutside, true);
-  document.addEventListener('keydown', onKey, true);
-  const cleanup = rootMenu.remove.bind(rootMenu);
-  rootMenu.remove = () => {
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    cancelLeave();
     document.removeEventListener('pointerdown', onOutside, true);
     document.removeEventListener('keydown', onKey, true);
-    cleanup();
+    rootMenu.removeEventListener('mouseleave', scheduleLeave);
+    rootMenu.removeEventListener('mouseover', cancelLeave);
+    rootMenu.remove();
+    invoke('set_menu_open', { open: false }).catch(() => {});
   };
+
+  rootMenu.addEventListener('mouseleave', scheduleLeave);
+  rootMenu.addEventListener('mouseover', cancelLeave);
+  document.addEventListener('pointerdown', onOutside, true);
+  document.addEventListener('keydown', onKey, true);
+  activeMenuClose = close;
+  void invoke('set_menu_open', { open: true });
 }
 
 pet.addEventListener('contextmenu', openContextMenu);
