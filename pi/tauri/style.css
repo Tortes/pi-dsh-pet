@@ -31,6 +31,7 @@ body {
 
 
 .pet-status-bubble {
+  box-sizing: border-box;
   position: absolute;
   right: 0;
   bottom: calc(100% + 9px);
