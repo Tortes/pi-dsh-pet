@@ -152,6 +152,15 @@ function openContextMenu(event) {
   rootMenu.addEventListener('contextmenu', e => e.preventDefault());
   const columns = [];
   const opened = new Map();
+  let leaveTimer = null;
+  const cancelLeave = () => {
+    if (leaveTimer !== null) window.clearTimeout(leaveTimer);
+    leaveTimer = null;
+  };
+  const scheduleLeave = () => {
+    cancelLeave();
+    leaveTimer = window.setTimeout(closeContextMenu, 180);
+  };
 
   const hideChildren = panel => {
     const child = opened.get(panel);
@@ -183,6 +192,8 @@ function openContextMenu(event) {
     const panel = document.createElement('div');
     panel.className = 'pet-context-menu-panel';
     panel.hidden = true;
+    panel.addEventListener('mouseenter', cancelLeave);
+    panel.addEventListener('mouseleave', scheduleLeave);
     columns.push(panel);
     for (const node of nodes) {
       const item = document.createElement('button');
@@ -219,6 +230,8 @@ function openContextMenu(event) {
 
   const rootPanel = buildPanel(tree);
   rootPanel.hidden = false;
+  rootPanel.style.left = '0px';
+  rootPanel.style.top = '0px';
   document.body.appendChild(rootMenu);
   const x = event.clientX;
   const y = event.clientY;
@@ -229,14 +242,7 @@ function openContextMenu(event) {
   activeMenu = rootMenu;
   void invoke('set_menu_open', { open: true });
 
-  let leaveTimer = null;
-  rootMenu.addEventListener('mouseleave', () => {
-    leaveTimer = window.setTimeout(closeContextMenu, 180);
-  });
-  rootMenu.addEventListener('mouseenter', () => {
-    if (leaveTimer !== null) window.clearTimeout(leaveTimer);
-    leaveTimer = null;
-  });
+  rootMenu.addEventListener('mouseover', cancelLeave);
   const onOutside = e => {
     if (!rootMenu.contains(e.target)) closeContextMenu();
   };
