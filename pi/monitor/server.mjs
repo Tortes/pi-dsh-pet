@@ -112,10 +112,19 @@ function currentAggregate(now = Date.now()) {
 }
 
 function snapshot() {
-  const list = [...agents.values()]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .map(agentView);
-  return { type: 'agents_snapshot', agents: list, aggregate: currentAggregate() };
+  const ordered = [...agents.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  const list = ordered.map(agentView);
+  const latest = ordered.find((agent) =>
+    agent.state !== 'idle' &&
+    (!['error', 'result', 'success'].includes(agent.state) ||
+      Date.now() - agent.updatedAt <= TERMINAL_VISIBLE_MS),
+  );
+  return {
+    type: 'agents_snapshot',
+    agents: list,
+    latest: latest ? agentView(latest) : null,
+    aggregate: currentAggregate(),
+  };
 }
 
 function broadcastSnapshot(force = false) {
