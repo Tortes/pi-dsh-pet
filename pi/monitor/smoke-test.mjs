@@ -65,7 +65,7 @@ try {
 
   if (process.platform === 'linux') {
     const stat = await (await import('node:fs/promises')).readFile('/proc/' + child.pid + '/stat', 'utf8');
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\\s+/);
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
     assert.equal(Number(fields[2]), child.pid, 'detached monitor must own its process group');
     assert.equal(Number(fields[3]), child.pid, 'detached monitor must be a session leader');
   }
