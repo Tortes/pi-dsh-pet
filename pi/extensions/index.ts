@@ -71,26 +71,77 @@ async function monitorRequest(
 }
 
 /** Stop the known v1 monitor on its old default port so stale RPC sessions cannot keep respawning a legacy Pet. */
-async function retireLegacyMonitor(): Promise<void> {
-  const legacyPort = 39471;
-  if (legacyMonitorRetirementAttempted || MONITOR_PORT === legacyPort) return;
-  legacyMonitorRetirementAttempted = true;
-  try {
-    const base = 'http://127.0.0.1:' + legacyPort;
-    const healthResponse = await fetch(base + '/health', { signal: AbortSignal.timeout(800) });
-    if (!healthResponse.ok) return;
-    const health = await healthResponse.json() as { service?: string; version?: number; protocolVersion?: number };
-    if (health.service !== 'pi-dsh-pet-monitor' ||
-        (health.protocolVersion ?? health.version) !== 1) return;
-    await fetch(base + '/pet/stop', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: '{}',
-      signal: AbortSignal.timeout(2000),
+async function listLegacyPetPorts(): Promise<number[]> {
+  return new Promise((resolve) => {
+    const command =
+      '$items = @(Get-CimInstance Win32_Process -Filter "Name=\'pi-dsh-pet.exe\'" | ' +
+      'ForEach-Object { $_.CommandLine }); ConvertTo-Json -InputObject $items -Compress';
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
     });
-    console.warn('[pi-dsh-pet] stopped legacy v1 Pet supervisor on port ' + legacyPort);
-  } catch {
-    /* No legacy monitor is listening; continue with the v2 runtime. */
+    let output = '';
+    const finish = (ports: number[]) => {
+      clearTimeout(timer);
+      resolve(ports);
+    };
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      output += chunk;
+      if (output.length > 32768) child.kill();
+    });
+    child.once('error', () => finish([]));
+    child.once('close', (code) => {
+      if (code !== 0 || !output.trim()) return finish([]);
+      try {
+        const value = JSON.parse(output.trim()) as string | string[];
+        const lines = Array.isArray(value) ? value : [value];
+        const ports = lines.flatMap((line) => {
+          const match = String(line).match(/pi-dsh-pet\\.exe"?\\s+(\\d{1,5})\\b/i);
+          if (!match) return [];
+          const port = Number(match[1]);
+          return Number.isInteger(port) && port > 1024 && port <= 65535 ? [port] : [];
+        });
+        finish(ports);
+      } catch {
+        finish([]);
+      }
+    });
+    const timer = setTimeout(() => {
+      child.kill();
+      finish([]);
+    }, 1500);
+  });
+}
+
+/** Retire old supervisors only after positively identifying their monitor protocol. */
+async function retireLegacyMonitor(): Promise<void> {
+  const legacyDefaultPort = 39471;
+  if (legacyMonitorRetirementAttempted || MONITOR_PORT === legacyDefaultPort) return;
+  legacyMonitorRetirementAttempted = true;
+
+  const ports = new Set<number>([legacyDefaultPort, ...await listLegacyPetPorts()]);
+  ports.delete(MONITOR_PORT);
+  for (const port of ports) {
+    try {
+      const base = 'http://127.0.0.1:' + port;
+      const healthResponse = await fetch(base + '/health', { signal: AbortSignal.timeout(700) });
+      if (!healthResponse.ok) continue;
+      const health = await healthResponse.json() as {
+        service?: string; version?: number; protocolVersion?: number;
+      };
+      if (health.service !== 'pi-dsh-pet-monitor' ||
+          (health.protocolVersion ?? health.version) !== 1) continue;
+      await fetch(base + '/pet/stop', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(1500),
+      });
+      console.warn('[pi-dsh-pet] stopped legacy v1 Pet supervisor on port ' + port);
+    } catch {
+      /* This port is not hosting a reachable legacy monitor. */
+    }
   }
 }
 
