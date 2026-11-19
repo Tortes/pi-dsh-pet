@@ -70,6 +70,18 @@ try {
     assert.equal(Number(fields[3]), child.pid, 'detached monitor must be a session leader');
   }
 
+  const agent = {
+    id: 'smoke-agent',
+    pid: 12345,
+    project: 'smoke-project',
+    cwd: '/tmp/smoke-project',
+    state: 'idle',
+    task: null,
+    eventType: 'session_start',
+  };
+  await post('/agents/register', agent);
+  await post('/pet/lease/acquire', { ownerId: agent.id, size: 'small' });
+
   socket = new WebSocket('ws://127.0.0.1:' + port + '/ws');
   socket.on('message', (raw) => {
     const message = raw.toString();
@@ -84,21 +96,8 @@ try {
     socket.once('error', reject);
   });
   const initial = await nextSnapshot();
-  assert.deepEqual(initial.agents, []);
-
-  const agent = {
-    id: 'smoke-agent',
-    pid: 12345,
-    project: 'smoke-project',
-    cwd: '/tmp/smoke-project',
-    state: 'idle',
-    task: null,
-    eventType: 'session_start',
-  };
-  await post('/agents/register', agent);
-  const registered = await nextSnapshot();
-  assert.equal(registered.agents.length, 1);
-  assert.equal(registered.agents[0].pid, 12345);
+  assert.equal(initial.agents.length, 1);
+  assert.equal(initial.agents[0].pid, 12345);
 
   const secondAgent = {
     id: 'smoke-agent-2',
