@@ -5,6 +5,25 @@ if (typeof invoke !== 'function') {
   throw new Error('Tauri API is unavailable. Check app.withGlobalTauri in tauri.conf.json.');
 }
 
+function reportRuntimeDiagnostic(message) {
+  const text = String(message ?? 'unknown runtime error').slice(0, 2000);
+  console.error('[pi-dsh-pet]', text);
+  if (typeof invoke === 'function') {
+    void invoke('write_diagnostic', { message: text }).catch(() => {});
+  }
+}
+
+window.addEventListener('error', event => {
+  reportRuntimeDiagnostic('window.error: ' + (event.message || 'unknown') +
+    (event.filename ? ' @ ' + event.filename + ':' + event.lineno : '') +
+    (event.error?.stack ? '\\n' + event.error.stack : ''));
+});
+
+window.addEventListener('unhandledrejection', event => {
+  reportRuntimeDiagnostic('unhandledrejection: ' +
+    (event.reason?.stack || event.reason?.message || String(event.reason)));
+});
+
 const runtime = await invoke('runtime_config');
 const port = Number(runtime.port);
 const requestedSize = Number(runtime.size);
@@ -518,7 +537,7 @@ function connect() {
     handleMessage(raw);
   };
 
-  socket.onerror = error => console.warn('[pi-dsh-pet] WebSocket connection error:', error);
+  socket.onerror = error => reportRuntimeDiagnostic('WebSocket connection error: ' + String(error));
   socket.onclose = () => {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
