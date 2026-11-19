@@ -69,8 +69,32 @@ async function monitorRequest(
   return data;
 }
 
+/** Stop the known v1 monitor on its old default port so stale RPC sessions cannot keep respawning a legacy Pet. */
+async function retireLegacyMonitor(): Promise<void> {
+  const legacyPort = 39471;
+  if (MONITOR_PORT === legacyPort) return;
+  try {
+    const base = 'http://127.0.0.1:' + legacyPort;
+    const healthResponse = await fetch(base + '/health', { signal: AbortSignal.timeout(800) });
+    if (!healthResponse.ok) return;
+    const health = await healthResponse.json() as { service?: string; version?: number; protocolVersion?: number };
+    if (health.service !== 'pi-dsh-pet-monitor' ||
+        (health.protocolVersion ?? health.version) !== 1) return;
+    await fetch(base + '/pet/stop', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(2000),
+    });
+    console.warn('[pi-dsh-pet] stopped legacy v1 Pet supervisor on port ' + legacyPort);
+  } catch {
+    /* No legacy monitor is listening; continue with the v2 runtime. */
+  }
+}
+
 /** Start one detached monitor. Node's detached POSIX spawn creates a new session (setsid). */
 async function ensureMonitor(): Promise<any> {
+  await retireLegacyMonitor();
   const readHealth = async () => {
     const health = await monitorRequest('/health');
     if (health.service !== 'pi-dsh-pet-monitor') {
