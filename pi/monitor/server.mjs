@@ -460,6 +460,7 @@ server = createServer(async (req, res) => {
       }
       if (pathname === '/agents/heartbeat') {
         upsertAgent(body);
+        broadcastSnapshot(); // A missed event can still be recovered from the next heartbeat.
         sendJson(res, 200, { ok: true });
         return;
       }
