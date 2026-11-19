@@ -123,6 +123,7 @@ function snapshot() {
     type: 'agents_snapshot',
     agents: list,
     latest: latest ? agentView(latest) : null,
+    activeCount: ordered.filter((agent) => ['waiting', 'working', 'thinking'].includes(agent.state)).length,
     aggregate: currentAggregate(),
   };
 }
