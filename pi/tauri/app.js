@@ -342,7 +342,7 @@ const STATUS_LABELS = {
   success: '已完成',
   error: '发生错误',
 };
-let lastAggregateState = null;
+let lastProgressKey = null;
 
 function renderAgentSnapshot(data) {
   const agents = Array.isArray(data.agents) ? data.agents : [];
@@ -365,14 +365,18 @@ function renderAgentSnapshot(data) {
     }
   }
 
-  const nextState = aggregate?.state ?? null;
-  if (nextState !== lastAggregateState) {
-    if (nextState) playWorkStatus(nextState);
+  // React to every new event, not only aggregate state transitions. This way
+  // progress from one Pi is still visible while another Pi is busy/waiting.
+  const progressKey = selected
+    ? [selected.id, selected.updatedAt, selected.eventType, selected.state, selected.task].join('|')
+    : null;
+  if (progressKey !== lastProgressKey) {
+    if (selected) playWorkStatus(selected.state);
     else {
       const idle = config?.animations?.idle;
       if (Array.isArray(idle) && idle.length) play(pick(idle), true);
     }
-    lastAggregateState = nextState;
+    lastProgressKey = progressKey;
   }
 }
 
