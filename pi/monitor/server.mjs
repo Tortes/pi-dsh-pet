@@ -251,12 +251,22 @@ function findPetExecutable() {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 
-function forceKillRuntime(child) {
+async function waitForExit(child, timeoutMs = 2500) {
+  if (!child || child.exitCode !== null) return;
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
+async function forceKillRuntime(child) {
+  if (!child || child.exitCode !== null) return;
   if (process.platform === 'win32') {
-    spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
+    const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
       stdio: 'ignore',
       windowsHide: true,
     });
+    await waitForExit(killer, 2500);
   } else if (isWsl()) {
     // Do not use taskkill /IM: that can terminate another Pet instance owned by
     // a different monitor. Match the exact monitor port passed to this runtime.
@@ -264,13 +274,15 @@ function forceKillRuntime(child) {
       "Get-CimInstance Win32_Process -Filter \"Name='pi-dsh-pet.exe'\" | " +
       "Where-Object { $_.CommandLine -match ('(^|\\s)' + $port + '(\\s|$)') } | " +
       "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
-    spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+    const killer = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
       stdio: 'ignore',
       windowsHide: true,
     });
+    await waitForExit(killer, 4000);
   } else {
     child.kill('SIGTERM');
   }
+  await waitForExit(child, 2000);
 }
 
 function scheduleRestart() {
@@ -293,7 +305,7 @@ function scheduleRestart() {
       console.error('[pi-dsh-pet] runtime recovery failed:', String(error));
       const failedChild = petProcess;
       if (failedChild && failedChild.exitCode === null) {
-        forceKillRuntime(failedChild);
+        await forceKillRuntime(failedChild);
         petProcess = null;
         petConnected = false;
       }
@@ -305,12 +317,12 @@ function scheduleRestart() {
 
 function scheduleConnectionRecovery() {
   if (!petDesired || connectionLostTimer) return;
-  connectionLostTimer = setTimeout(() => {
+  connectionLostTimer = setTimeout(async () => {
     connectionLostTimer = null;
     if (petConnected || !petDesired) return;
     const staleChild = petProcess;
     if (staleChild && staleChild.exitCode === null) {
-      forceKillRuntime(staleChild);
+      await forceKillRuntime(staleChild);
       if (petProcess === staleChild) petProcess = null;
     }
     scheduleRestart();
@@ -421,7 +433,7 @@ async function stopPetRuntime() {
       resolve();
     });
   });
-  if (child.exitCode === null) forceKillRuntime(child);
+  if (child.exitCode === null) await forceKillRuntime(child);
   if (petProcess === child) petProcess = null;
   petConnected = false;
 }
