@@ -16,6 +16,13 @@ struct PetState {
     bounds: Arc<Mutex<Bounds>>,
     physics: Arc<Mutex<PhysicsConfig>>,
     menu_open: Arc<Mutex<bool>>,
+    bubble_bounds: Arc<Mutex<BubbleBounds>>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct BubbleBounds {
+    bounds: Bounds,
+    visible: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -66,6 +73,19 @@ fn set_pet_bounds(
 #[tauri::command]
 fn set_menu_open(state: State<'_, PetState>, open: bool) -> Result<(), String> {
     *state.menu_open.lock().map_err(|_| "menu mutex poisoned")? = open;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_bubble_bounds(
+    state: State<'_, PetState>,
+    left: f64, top: f64, right: f64, bottom: f64, visible: bool,
+) -> Result<(), String> {
+    let mut bubble = state.bubble_bounds.lock().map_err(|_| "bubble bounds mutex poisoned")?;
+    *bubble = BubbleBounds {
+        bounds: Bounds { left, top, right, bottom },
+        visible,
+    };
     Ok(())
 }
 
@@ -270,15 +290,23 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
             let body_top = origin.y as f64 + bounds.top * scale;
             let body_right = origin.x as f64 + bounds.right * scale;
             let body_bottom = origin.y as f64 + bounds.bottom * scale;
+            let sprite_inside = cursor_x >= body_left && cursor_x <= body_right
+                && cursor_y >= body_top && cursor_y <= body_bottom;
+            let bubble = state.bubble_bounds.lock().map(|value| *value).unwrap_or_default();
+            let bubble_left = origin.x as f64 + bubble.bounds.left * scale;
+            let bubble_top = origin.y as f64 + bubble.bounds.top * scale;
+            let bubble_right = origin.x as f64 + bubble.bounds.right * scale;
+            let bubble_bottom = origin.y as f64 + bubble.bounds.bottom * scale;
+            let bubble_inside = bubble.visible
+                && cursor_x >= bubble_left && cursor_x <= bubble_right
+                && cursor_y >= bubble_top && cursor_y <= bubble_bottom;
             // Keep the whole transparent host window interactive while its HTML context menu is open.
             // The menu can extend beyond the sprite hit box; otherwise native click-through would eat its clicks.
             let menu_open = state.menu_open.lock().map(|value| *value).unwrap_or(false);
-            let inside = menu_open || (
-                cursor_x >= body_left && cursor_x <= body_right
-                    && cursor_y >= body_top && cursor_y <= body_bottom
-            );
+            let inside = menu_open || sprite_inside || bubble_inside;
 
-            if !dragging && pressed && inside {
+            // Only the visible sprite starts a drag; the message bubble remains clickable.
+            if !dragging && pressed && sprite_inside {
                 dragging = true;
                 flight = None;
                 drag_offset = (cursor_x - origin.x as f64, cursor_y - origin.y as f64);
@@ -472,6 +500,7 @@ pub fn run() {
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
             set_pet_bounds,
+            set_bubble_bounds,
             set_physics,
             set_menu_open,
             runtime_config,
