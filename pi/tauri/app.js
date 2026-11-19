@@ -39,6 +39,7 @@ const messageQueue = [];
 let messageTimer = null;
 let currentMessage = null;
 let knownAgentUpdates = new Map();
+let latestAgentSnapshot = null;
 
 function showNextMessage() {
   if (messageTimer !== null) window.clearTimeout(messageTimer);
@@ -196,28 +197,23 @@ function openContextMenu(event) {
   const tree = animationMenuTree();
   tree.unshift({
     label: 'Pi 进程状态',
-    action: async () => {
-      try {
-        const response = await fetch('http://127.0.0.1:' + port + '/agents');
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        const data = await response.json();
-        const agents = Array.isArray(data.agents) ? data.agents : [];
-        if (!agents.length) {
-          enqueueMessage('Pi 进程状态', '当前没有已注册的 Pi 进程');
-          return;
-        }
-        const activeCount = agents.filter(agent =>
-          !['idle', 'success', 'error'].includes(agent.state),
-        ).length;
-        enqueueMessage('Pi 进程状态', '共 ' + agents.length + ' 个 Pi 在线，' +
-          activeCount + ' 个活跃进程');
-        for (const agent of agents) {
-          const label = STATUS_LABELS[agent.state] ?? agent.state ?? '未知';
-          enqueueMessage((agent.project || 'Pi') + ' · PID ' + agent.pid,
-            label + (agent.task ? ' · ' + agent.task : ''));
-        }
-      } catch (error) {
-        enqueueMessage('Pi 状态查询失败', String(error));
+    action: () => {
+      const data = latestAgentSnapshot;
+      if (!data) {
+        enqueueMessage('Pi 状态查询', '正在连接本地监控服务，请稍后重试');
+        return;
+      }
+      const agents = Array.isArray(data.agents) ? data.agents : [];
+      if (!agents.length) {
+        enqueueMessage('Pi 进程状态', '当前没有已注册的 Pi 进程');
+        return;
+      }
+      enqueueMessage('Pi 进程状态', '共 ' + agents.length + ' 个 Pi 在线，' +
+        Number(data.activeCount ?? 0) + ' 个活跃进程');
+      for (const agent of agents) {
+        const label = STATUS_LABELS[agent.state] ?? agent.state ?? '未知';
+        enqueueMessage((agent.project || 'Pi') + ' · PID ' + agent.pid,
+          label + (agent.task ? ' · ' + agent.task : ''));
       }
     },
   });
@@ -397,6 +393,7 @@ const STATUS_LABELS = {
 let lastProgressKey = null;
 
 function renderAgentSnapshot(data) {
+  latestAgentSnapshot = data;
   const agents = Array.isArray(data.agents) ? data.agents : [];
   const nextUpdates = new Map();
   for (const agent of agents) {
