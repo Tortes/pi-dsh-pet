@@ -1,5 +1,9 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Manager, State};
@@ -10,6 +14,83 @@ const GRAVITY_DEFAULT: f64 = 1400.0;
 const RESTITUTION_DEFAULT: f64 = 0.78;
 const FRICTION_DEFAULT: f64 = 2.5;
 const MAX_THROW_SPEED: f64 = 3600.0;
+
+fn runtime_data_root() -> PathBuf {
+    std::env::temp_dir().join("pi-dsh-pet").join("webview2")
+}
+
+#[cfg(target_os = "windows")]
+fn process_is_running(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() { return false; }
+        let mut exit_code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        ok != 0 && exit_code == STILL_ACTIVE
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn process_is_running(pid: u32) -> bool {
+    PathBuf::from("/proc").join(pid.to_string()).exists()
+}
+
+/// Each process gets a unique WebView2 profile. A force-killed WebView can
+/// leave Chromium lock files behind; never reuse that profile on next launch.
+fn prepare_webview_data_dir() -> Result<PathBuf, String> {
+    let root = runtime_data_root();
+    fs::create_dir_all(&root).map_err(|error| format!("create WebView2 data root: {error}"))?;
+    let current_pid = std::process::id();
+
+    if let Ok(entries) = fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() { continue; }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let pid = name.split('-').next().and_then(|value| value.parse::<u32>().ok());
+            if let Some(pid) = pid {
+                if pid == current_pid || !process_is_running(pid) {
+                    let _ = fs::remove_dir_all(path);
+                }
+            } else {
+                let _ = fs::remove_dir_all(path);
+            }
+        }
+    }
+
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)
+        .unwrap_or_default().as_millis();
+    let directory = root.join(format!("{current_pid}-{nonce}"));
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("create isolated WebView2 profile: {error}"))?;
+    Ok(directory)
+}
+
+fn diagnostic_log_path() -> PathBuf {
+    std::env::temp_dir().join("pi-dsh-pet").join("logs").join("pet-runtime.log")
+}
+
+fn append_diagnostic(message: &str) -> Result<(), String> {
+    let path = diagnostic_log_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)
+        .map_err(|error| error.to_string())?;
+    let clean = message.replace('\r', " ").replace('\n', " ");
+    writeln!(file, "[{}] {}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(), clean)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn write_diagnostic(message: String) -> Result<(), String> {
+    append_diagnostic(&message)
+}
 
 #[derive(Clone, Default)]
 struct PetState {
@@ -110,6 +191,10 @@ fn set_physics(state: State<'_, PetState>, physics: PhysicsConfig) -> Result<(),
 struct RuntimeConfig {
     port: u16,
     size: u32,
+}
+
+fn requested_port() -> u16 {
+    std::env::args().nth(1).and_then(|value| value.parse::<u16>().ok()).unwrap_or(39472)
 }
 
 fn requested_size() -> u32 {
@@ -495,8 +580,20 @@ fn start_pointer_loop(_app: tauri::AppHandle, _state: PetState) {}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let state = PetState::default();
+    let webview_data_dir = prepare_webview_data_dir().unwrap_or_else(|error| {
+        eprintln!("[pi-dsh-pet] {error}");
+        std::env::temp_dir().join(format!("pi-dsh-pet-webview-fallback-{}", std::process::id()))
+    });
+    let _ = append_diagnostic(&format!(
+        "runtime starting pid={} port={} webview_data={}",
+        std::process::id(), requested_port(), webview_data_dir.display()
+    ));
 
-    tauri::Builder::default()
+    let mut context = tauri::generate_context!();
+    context.config_mut().app.app_directories_override =
+        Some(tauri::utils::config::AppDirectoriesOverride::Root(webview_data_dir.clone()));
+
+    let result = tauri::Builder::default()
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
             set_pet_bounds,
@@ -505,7 +602,8 @@ pub fn run() {
             set_menu_open,
             runtime_config,
             show_pet,
-            close_pet
+            close_pet,
+            write_diagnostic
         ])
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -529,6 +627,14 @@ pub fn run() {
             start_pointer_loop(app.handle().clone(), state.clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Pi desktop pet");
+        .run(context);
+
+    match result {
+        Ok(()) => { let _ = append_diagnostic("runtime exited normally"); }
+        Err(error) => {
+            let _ = append_diagnostic(&format!("runtime failed: {error}"));
+            eprintln!("[pi-dsh-pet] runtime failed: {error}");
+        }
+    }
+    let _ = fs::remove_dir_all(&webview_data_dir);
 }
