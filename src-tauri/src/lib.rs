@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, State};
 
 const PET_PADDING: f64 = 20.0;
+const STATUS_BUBBLE_HEIGHT: f64 = 92.0;
 const GRAVITY_DEFAULT: f64 = 1400.0;
 const RESTITUTION_DEFAULT: f64 = 0.78;
 const FRICTION_DEFAULT: f64 = 2.5;
@@ -481,7 +482,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let size = requested_size() as f64;
                 let width = size + PET_PADDING * 2.0;
-                let height = size * 9.0 / 16.0 + PET_PADDING * 2.0;
+                let height = size * 9.0 / 16.0 + PET_PADDING * 2.0 + STATUS_BUBBLE_HEIGHT;
                 let _ = window.set_size(tauri::LogicalSize::new(width, height));
                 let _ = window.set_always_on_top(true);
                 let _ = window.set_ignore_cursor_events(true);
