@@ -167,6 +167,16 @@ function toolTask(event: unknown): string {
   if (args && typeof args === 'object') {
     const target = args.path ?? args.filePath ?? args.file_path ?? args.filename;
     if (typeof target === 'string' && target) return name + ' · ' + basename(target);
+    if (name === 'bash' && typeof args.command === 'string') {
+      const parts = args.command.trim().split(/[\\s|&;]+/).filter(Boolean);
+      const safeCommands = new Set([
+        'git', 'npm', 'pnpm', 'yarn', 'cargo', 'rustc', 'python', 'python3',
+        'pytest', 'node', 'rg', 'fd', 'ls', 'grep', 'make', 'cmake', 'go',
+      ]);
+      if (parts.length && safeCommands.has(parts[0])) {
+        return name + ' · ' + parts.slice(0, 2).join(' ');
+      }
+    }
   }
   return name;
 }
