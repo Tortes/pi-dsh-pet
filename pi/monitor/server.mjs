@@ -253,10 +253,17 @@ function findPetExecutable() {
 
 async function waitForExit(child, timeoutMs = 2500) {
   if (!child || child.exitCode !== null) return;
-  await Promise.race([
-    new Promise((resolve) => child.once('exit', resolve)),
-    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
-  ]);
+  await new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      child.removeListener('exit', finish);
+      child.removeListener('error', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    child.once('exit', finish);
+    child.once('error', finish);
+  });
 }
 
 async function forceKillRuntime(child) {
