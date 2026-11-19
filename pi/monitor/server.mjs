@@ -359,14 +359,16 @@ async function stopPet() {
   if (connectionLostTimer) clearTimeout(connectionLostTimer);
   connectionLostTimer = null;
 
+  // A Pet may have reconnected after the monitor itself restarted, in which
+  // case there is a WebSocket client but no child handle owned by this monitor.
+  for (const ws of clients) {
+    if (ws.readyState === ws.OPEN) ws.send('shutdown');
+  }
   const child = petProcess;
   if (!child || child.exitCode !== null) {
     petProcess = null;
-    petConnected = false;
+    petConnected = clients.size > 0;
     return;
-  }
-  for (const ws of clients) {
-    if (ws.readyState === ws.OPEN) ws.send('shutdown');
   }
   await new Promise((resolve) => {
     const timeout = setTimeout(resolve, 1200);
