@@ -31,7 +31,7 @@ const STATUS_LABELS: Record<string, string> = {
   result: '整理结果',
   waiting: '等待确认',
   success: '已完成',
-  error: '发生错误',
+  error: '异常/中止',
 };
 
 type AgentState = 'idle' | 'thinking' | 'working' | 'result' | 'waiting' | 'success' | 'error';
@@ -288,20 +288,29 @@ export default function (pi: ExtensionAPI) {
   // agent_end can be followed by an automatic retry or compaction. Only agent_settled
   // is the final completion signal for the whole prompt.
   pi.on('agent_end', (event) => {
-    const messages = (event as { messages?: Array<{ role?: string; stopReason?: string }> }).messages ?? [];
-    const messageError = messages.some((message) =>
+    const detail = event as {
+      messages?: Array<{ role?: string; stopReason?: string }>;
+      willRetry?: boolean;
+    };
+    const messageError = (detail.messages ?? []).some((message) =>
       message.role === 'assistant' && ['error', 'aborted', 'length'].includes(message.stopReason ?? ''),
     );
-    if (messageError) {
+    // A failed intermediate attempt should not flash an error if Pi will retry it.
+    if (messageError && !detail.willRetry) {
       turnHadError = true;
       reportProgress('error', agentTask, 'agent_end_error');
     }
   });
 
-  pi.on('agent_settled', () => {
+  pi.on('agent_settled', (event) => {
     if (waitingTimer) clearTimeout(waitingTimer);
     waitingTimer = null;
-    reportProgress(turnHadError ? 'error' : 'success', null, 'agent_settled');
+    const aborted = Boolean((event as { aborted?: boolean }).aborted);
+    reportProgress(
+      turnHadError || aborted ? 'error' : 'success',
+      aborted ? '用户中止' : null,
+      aborted ? 'agent_settled_aborted' : 'agent_settled',
+    );
   });
 
   pi.registerCommand('pet', {
