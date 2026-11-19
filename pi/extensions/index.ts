@@ -8,7 +8,10 @@ const __filename = fileURLToPath(import.meta.url);
 const PI_DIR = dirname(dirname(__filename));
 const PACKAGE_ROOT = dirname(PI_DIR);
 const MONITOR_SERVER = join(PI_DIR, 'monitor', 'server.mjs');
-const MONITOR_PORT = Number(process.env.PI_DSH_PET_PORT || 39471);
+const configuredMonitorPort = Number(process.env.PI_DSH_PET_PORT || 39471);
+const MONITOR_PORT = Number.isInteger(configuredMonitorPort) && configuredMonitorPort > 1024 && configuredMonitorPort <= 65535
+  ? configuredMonitorPort
+  : 39471;
 const MONITOR_URL = 'http://127.0.0.1:' + MONITOR_PORT;
 const AGENT_ID = String(process.pid) + '-' + randomUUID();
 const PROJECT = basename(process.cwd()) || 'Pi';
@@ -68,7 +71,7 @@ async function monitorRequest(
 async function ensureMonitor(): Promise<any> {
   try {
     const health = await monitorRequest('/health');
-    if (health.version === 1) return health;
+    if (health.service === 'pi-dsh-pet-monitor' && health.version === 1) return health;
   } catch {
     /* No monitor yet (or it is restarting). */
   }
@@ -92,7 +95,7 @@ async function ensureMonitor(): Promise<any> {
     await delay(200);
     try {
       const health = await monitorRequest('/health');
-      if (health.version === 1) return health;
+      if (health.service === 'pi-dsh-pet-monitor' && health.version === 1) return health;
     } catch {
       /* Keep waiting for the detached monitor to bind. */
     }
