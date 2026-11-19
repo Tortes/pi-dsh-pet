@@ -14,6 +14,7 @@ const MAX_THROW_SPEED: f64 = 3600.0;
 struct PetState {
     bounds: Arc<Mutex<Bounds>>,
     physics: Arc<Mutex<PhysicsConfig>>,
+    menu_open: Arc<Mutex<bool>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -58,6 +59,12 @@ fn set_pet_bounds(
 ) -> Result<(), String> {
     let mut bounds = state.bounds.lock().map_err(|_| "bounds mutex poisoned")?;
     *bounds = Bounds { left, top, right, bottom };
+    Ok(())
+}
+
+#[tauri::command]
+fn set_menu_open(state: State<'_, PetState>, open: bool) -> Result<(), String> {
+    *state.menu_open.lock().map_err(|_| "menu mutex poisoned")? = open;
     Ok(())
 }
 
@@ -262,8 +269,13 @@ fn start_pointer_loop(app: tauri::AppHandle, state: PetState) {
             let body_top = origin.y as f64 + bounds.top * scale;
             let body_right = origin.x as f64 + bounds.right * scale;
             let body_bottom = origin.y as f64 + bounds.bottom * scale;
-            let inside = cursor_x >= body_left && cursor_x <= body_right
-                && cursor_y >= body_top && cursor_y <= body_bottom;
+            // Keep the whole transparent host window interactive while its HTML context menu is open.
+            // The menu can extend beyond the sprite hit box; otherwise native click-through would eat its clicks.
+            let menu_open = state.menu_open.lock().map(|value| *value).unwrap_or(false);
+            let inside = menu_open || (
+                cursor_x >= body_left && cursor_x <= body_right
+                    && cursor_y >= body_top && cursor_y <= body_bottom
+            );
 
             if !dragging && pressed && inside {
                 dragging = true;
@@ -460,6 +472,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_pet_bounds,
             set_physics,
+            set_menu_open,
             runtime_config,
             show_pet,
             close_pet
