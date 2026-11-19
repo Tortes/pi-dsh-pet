@@ -1,4 +1,9 @@
-import { invoke } from '@tauri-apps/api/core';
+// This frontend is served as static files (no bundler/import map). Expose Tauri's
+// supported v2 JavaScript API on window and consume it without a bare module import.
+const invoke = window.__TAURI__?.core?.invoke;
+if (typeof invoke !== 'function') {
+  throw new Error('Tauri API is unavailable. Check app.withGlobalTauri in tauri.conf.json.');
+}
 
 const runtime = await invoke('runtime_config');
 const port = Number(runtime.port);
