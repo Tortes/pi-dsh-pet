@@ -18,8 +18,8 @@ assert.doesNotMatch(app, /^\s*import\s+.*from\s+['"][^./][^'"]*['"]/m,
 const extension = await readFile(new URL('../pi/extensions/index.ts', import.meta.url), 'utf8');
 const monitor = await readFile(new URL('../pi/monitor/server.mjs', import.meta.url), 'utf8');
 assert.match(extension, /MONITOR_PROTOCOL_VERSION = 2/);
-assert.match(extension, /PI_DSH_PET_PORT \\|\\| 39472/);
+assert.ok(extension.includes('process.env.PI_DSH_PET_PORT || 39472'));
 assert.match(monitor, /const PROTOCOL_VERSION = 2/);
-assert.match(monitor, /const petLeases = new Map\\(\\)/);
+assert.ok(monitor.includes('const petLeases = new Map();'));
 assert.match(monitor, /protocolVersion: PROTOCOL_VERSION/);
 console.log('Static Tauri frontend and monitor protocol checks passed');
