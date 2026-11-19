@@ -124,6 +124,12 @@ try {
   assert.equal(oneLeaseLeft.petDesired, true);
   assert.equal(oneLeaseLeft.petLeaseCount, 1);
 
+  await post('/pet/stop', { all: true });
+  const explicitStop = await (await fetch(base + '/health')).json();
+  assert.equal(explicitStop.petDesired, false);
+  assert.equal(explicitStop.petLeaseCount, 0);
+  await post('/pet/lease/acquire', { ownerId: secondAgent.id, size: 'large' });
+
   await post('/agents/event', {
     ...agent,
     state: 'working',
