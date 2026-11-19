@@ -44,6 +44,7 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let waitingTimer: ReturnType<typeof setTimeout> | null = null;
 let turnHadError = false;
 let lastMonitorWarning = 0;
+let monitorQueue: Promise<unknown> = Promise.resolve();
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -112,19 +113,32 @@ function agentPayload() {
   };
 }
 
-async function registerAgent(): Promise<void> {
+function enqueueMonitorOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const next = monitorQueue.then(operation, operation) as Promise<T>;
+  monitorQueue = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+function startHeartbeat(): void {
+  if (heartbeatTimer) return;
+  heartbeatTimer = setInterval(() => {
+    void enqueueMonitorOperation(sendHeartbeatUnlocked);
+  }, 5000);
+  heartbeatTimer.unref?.();
+}
+
+async function registerAgentUnlocked(): Promise<void> {
   await ensureMonitor();
   await monitorRequest('/agents/register', 'POST', agentPayload());
   agentRegistered = true;
-  if (!heartbeatTimer) {
-    heartbeatTimer = setInterval(() => {
-      void sendHeartbeat();
-    }, 5000);
-    heartbeatTimer.unref?.();
-  }
+  startHeartbeat();
 }
 
-async function sendHeartbeat(): Promise<void> {
+function registerAgent(): Promise<void> {
+  return enqueueMonitorOperation(registerAgentUnlocked);
+}
+
+async function sendHeartbeatUnlocked(): Promise<void> {
   try {
     await ensureMonitor();
     await monitorRequest(
@@ -147,19 +161,22 @@ function reportProgress(state: AgentState, task: string | null, eventType: strin
   agentState = state;
   agentTask = task;
   agentEventType = eventType;
-  void (async () => {
+  const payload = agentPayload();
+  void enqueueMonitorOperation(async () => {
     try {
       await ensureMonitor();
-      if (!agentRegistered) await registerAgent();
-      await monitorRequest('/agents/event', 'POST', agentPayload());
+      await monitorRequest('/agents/event', 'POST', payload);
+      agentRegistered = true;
+      startHeartbeat();
     } catch (error) {
       const now = Date.now();
       if (now - lastMonitorWarning > 30000) {
         lastMonitorWarning = now;
         console.warn('[pi-dsh-pet] unable to report Pi progress:', String(error));
       }
+      agentRegistered = false;
     }
-  })();
+  });
 }
 
 function toolTask(event: unknown): string {
@@ -209,13 +226,15 @@ function clearLocalTimers(): void {
 
 async function unregisterAgent(): Promise<void> {
   clearLocalTimers();
-  if (!agentRegistered) return;
-  agentRegistered = false;
-  try {
-    await monitorRequest('/agents/unregister', 'POST', { id: AGENT_ID });
-  } catch {
-    /* The monitor may already have exited after the last Pi process closed. */
-  }
+  await enqueueMonitorOperation(async () => {
+    if (!agentRegistered) return;
+    agentRegistered = false;
+    try {
+      await monitorRequest('/agents/unregister', 'POST', { id: AGENT_ID });
+    } catch {
+      /* The monitor may already have exited after the last Pi process closed. */
+    }
+  });
 }
 
 export default function (pi: ExtensionAPI) {
