@@ -23,12 +23,49 @@ pet.appendChild(video);
 const statusBubble = document.createElement('div');
 statusBubble.className = 'pet-status-bubble';
 statusBubble.hidden = true;
+statusBubble.setAttribute('role', 'status');
 const statusTitle = document.createElement('div');
 statusTitle.className = 'pet-status-title';
 const statusDetail = document.createElement('div');
 statusDetail.className = 'pet-status-detail';
-statusBubble.append(statusTitle, statusDetail);
+const skipMessage = document.createElement('button');
+skipMessage.type = 'button';
+skipMessage.className = 'pet-message-skip';
+skipMessage.textContent = '跳过 ›';
+statusBubble.append(statusTitle, statusDetail, skipMessage);
 pet.appendChild(statusBubble);
+
+const messageQueue = [];
+let messageTimer = null;
+let currentMessage = null;
+let knownAgentUpdates = new Map();
+
+function showNextMessage() {
+  if (messageTimer !== null) window.clearTimeout(messageTimer);
+  messageTimer = null;
+  currentMessage = messageQueue.shift() ?? null;
+  if (!currentMessage) {
+    statusBubble.hidden = true;
+    void syncBounds();
+    return;
+  }
+  statusBubble.hidden = false;
+  statusTitle.textContent = currentMessage.title;
+  statusDetail.textContent = currentMessage.detail;
+  void syncBounds();
+  messageTimer = window.setTimeout(showNextMessage, 5000);
+}
+
+function enqueueMessage(title, detail) {
+  messageQueue.push({ title: String(title), detail: String(detail) });
+  if (!currentMessage) showNextMessage();
+}
+
+skipMessage.addEventListener('click', event => {
+  event.preventDefault();
+  event.stopPropagation();
+  showNextMessage();
+});
 
 let config = null;
 let current = '';
@@ -157,6 +194,30 @@ function openContextMenu(event) {
   event.preventDefault();
   event.stopPropagation();
   const tree = animationMenuTree();
+  tree.unshift({
+    label: 'Pi 进程状态',
+    action: async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:' + port + '/agents');
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json();
+        const agents = Array.isArray(data.agents) ? data.agents : [];
+        if (!agents.length) {
+          enqueueMessage('Pi 进程状态', '当前没有已注册的 Pi 进程');
+          return;
+        }
+        enqueueMessage('Pi 进程状态', '共 ' + agents.length + ' 个 Pi 在线，' +
+          Number(data.activeCount ?? 0) + ' 个活跃进程');
+        for (const agent of agents) {
+          const label = STATUS_LABELS[agent.state] ?? agent.state ?? '未知';
+          enqueueMessage((agent.project || 'Pi') + ' · PID ' + agent.pid,
+            label + (agent.task ? ' · ' + agent.task : ''));
+        }
+      } catch (error) {
+        enqueueMessage('Pi 状态查询失败', String(error));
+      }
+    },
+  });
   if (!tree.length) return;
 
   // Use a viewport-origin root, like the upstream menu: each cascading panel is
@@ -177,7 +238,7 @@ function openContextMenu(event) {
   };
   const scheduleLeave = () => {
     cancelLeave();
-    leaveTimer = window.setTimeout(closeContextMenu, 200);
+    leaveTimer = window.setTimeout(closeContextMenu, 650);
   };
 
   const hideChain = panel => {
@@ -195,7 +256,7 @@ function openContextMenu(event) {
     const parentRect = item.parentElement.getBoundingClientRect();
     const width = child.offsetWidth;
     const height = child.offsetHeight;
-    const gap = 4;
+    const gap = 0;
     const minLeft = 4;
     const minTop = 4;
     const maxLeft = Math.max(minLeft, window.innerWidth - width - 4);
@@ -274,7 +335,8 @@ function openContextMenu(event) {
         });
         item.addEventListener('click', () => {
           closeContextMenu();
-          if (node.anim) play(node.anim, false);
+          if (node.action) void node.action();
+          else if (node.anim) play(node.anim, false);
         });
       }
       panel.appendChild(item);
@@ -346,27 +408,22 @@ let lastProgressKey = null;
 
 function renderAgentSnapshot(data) {
   const agents = Array.isArray(data.agents) ? data.agents : [];
-  const aggregate = data.aggregate ?? null;
-  const selected = data.latest ?? aggregate?.agent ?? null;
-
-  if (agents.length === 0) {
-    statusBubble.hidden = true;
-  } else {
-    statusBubble.hidden = false;
-    if (selected) {
-      statusTitle.textContent = agents.length + ' 个 Pi 在线 · ' +
-        Number(data.activeCount ?? 0) + ' 个活跃 · 最近 ' +
-        (selected.project || 'Pi') + ' (PID ' + selected.pid + ')';
-      const stateLabel = STATUS_LABELS[selected.state] ?? '运行中';
-      statusDetail.textContent = stateLabel + (selected.task ? ' · ' + selected.task : '');
-    } else {
-      statusTitle.textContent = agents.length + ' 个 Pi 进程在线';
-      statusDetail.textContent = '当前空闲，等待新的任务';
+  const nextUpdates = new Map();
+  for (const agent of agents) {
+    const key = [agent.id, agent.updatedAt, agent.eventType, agent.state, agent.task].join('|');
+    const previous = knownAgentUpdates.get(agent.id);
+    nextUpdates.set(agent.id, key);
+    if (previous === undefined || previous === key) continue;
+    if (agent.state === 'success') {
+      enqueueMessage((agent.project || 'Pi') + ' · 任务完成',
+        'PID ' + agent.pid + (agent.task ? ' · ' + agent.task : ' · 已完成当前任务'));
+    } else if (agent.state === 'error') {
+      enqueueMessage((agent.project || 'Pi') + ' · 任务异常',
+        'PID ' + agent.pid + (agent.task ? ' · ' + agent.task : ' · 任务发生错误或被中止'));
     }
   }
-
-  // React to every new event, not only aggregate state transitions. This way
-  // progress from one Pi is still visible while another Pi is busy/waiting.
+  knownAgentUpdates = nextUpdates;
+  const selected = data.latest ?? data.aggregate?.agent ?? null;
   const progressKey = selected
     ? [selected.id, selected.updatedAt, selected.eventType, selected.state, selected.task].join('|')
     : null;
@@ -407,6 +464,7 @@ function handleMessage(raw) {
 }
 
 let lastBounds = '';
+let lastBubbleBounds = '';
 async function syncBounds() {
   const rect = pet.getBoundingClientRect();
   const bounds = JSON.stringify({
@@ -415,14 +473,29 @@ async function syncBounds() {
     right: rect.right,
     bottom: rect.bottom,
   });
-  if (bounds === lastBounds) return;
-  await invoke('set_pet_bounds', {
-    left: rect.left,
-    top: rect.top,
-    right: rect.right,
-    bottom: rect.bottom,
+  if (bounds !== lastBounds) {
+    await invoke('set_pet_bounds', {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+    });
+    lastBounds = bounds;
+  }
+  const bubbleRect = statusBubble.getBoundingClientRect();
+  const bubbleBounds = JSON.stringify({
+    left: bubbleRect.left, top: bubbleRect.top,
+    right: bubbleRect.right, bottom: bubbleRect.bottom,
+    visible: !statusBubble.hidden,
   });
-  lastBounds = bounds;
+  if (bubbleBounds !== lastBubbleBounds) {
+    await invoke('set_bubble_bounds', {
+      left: bubbleRect.left, top: bubbleRect.top,
+      right: bubbleRect.right, bottom: bubbleRect.bottom,
+      visible: !statusBubble.hidden,
+    });
+    lastBubbleBounds = bubbleBounds;
+  }
 }
 
 function connect() {
