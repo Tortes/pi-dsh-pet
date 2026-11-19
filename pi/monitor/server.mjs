@@ -373,18 +373,23 @@ async function waitForPetConnection(timeoutMs = 15000) {
   });
 }
 
-async function startPet(size, ownerId) {
+function acquirePetLease(size, ownerId) {
   const owner = safeText(ownerId, 100);
   if (!owner || !agents.has(owner)) throw new Error('Pet lease owner is not a registered Pi process');
   petSize = SIZE_MAP[size] ? size : 'normal';
   petLeases.set(owner, { ownerId: owner, lastSeen: Date.now(), size: petSize });
   refreshPetDesired();
-  petEverConnected = petConnected || petEverConnected;
   restartAttempts = 0;
   clearSupervisorTimers();
+  return { ok: true, desired: petDesired, leaseCount: petLeases.size, size: petSize };
+}
+
+async function startPet(size, ownerId) {
+  const lease = acquirePetLease(size, ownerId);
+  petEverConnected = petConnected || petEverConnected;
   await launchPet();
   await waitForPetConnection();
-  return { ok: true, connected: petConnected, size: petSize, leaseCount: petLeases.size };
+  return { ...lease, connected: petConnected };
 }
 
 async function stopPetRuntime() {
@@ -525,6 +530,16 @@ server = createServer(async (req, res) => {
         broadcastSnapshot();
         if (agents.size === 0) scheduleIdleExit();
         sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (pathname === '/pet/lease/acquire') {
+        sendJson(res, 200, acquirePetLease(safeText(body.size, 20), body.ownerId));
+        return;
+      }
+      if (pathname === '/pet/lease/release') {
+        const ownerId = safeText(body.ownerId, 100);
+        if (ownerId) releasePetLease(ownerId);
+        sendJson(res, 200, { ok: true, desired: petDesired, leaseCount: petLeases.size });
         return;
       }
       if (pathname === '/pet/start') {
