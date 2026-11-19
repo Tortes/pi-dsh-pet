@@ -206,8 +206,11 @@ function openContextMenu(event) {
           enqueueMessage('Pi 进程状态', '当前没有已注册的 Pi 进程');
           return;
         }
+        const activeCount = agents.filter(agent =>
+          !['idle', 'success', 'error'].includes(agent.state),
+        ).length;
         enqueueMessage('Pi 进程状态', '共 ' + agents.length + ' 个 Pi 在线，' +
-          Number(data.activeCount ?? 0) + ' 个活跃进程');
+          activeCount + ' 个活跃进程');
         for (const agent of agents) {
           const label = STATUS_LABELS[agent.state] ?? agent.state ?? '未知';
           enqueueMessage((agent.project || 'Pi') + ' · PID ' + agent.pid,
@@ -230,16 +233,6 @@ function openContextMenu(event) {
 
   const openChild = new Map();
   let closed = false;
-  let leaveTimer = null;
-
-  const cancelLeave = () => {
-    if (leaveTimer !== null) window.clearTimeout(leaveTimer);
-    leaveTimer = null;
-  };
-  const scheduleLeave = () => {
-    cancelLeave();
-    leaveTimer = window.setTimeout(closeContextMenu, 650);
-  };
 
   const hideChain = panel => {
     panel.hidden = true;
@@ -364,17 +357,14 @@ function openContextMenu(event) {
   const close = () => {
     if (closed) return;
     closed = true;
-    cancelLeave();
     document.removeEventListener('pointerdown', onOutside, true);
     document.removeEventListener('keydown', onKey, true);
-    rootMenu.removeEventListener('mouseleave', scheduleLeave);
-    rootMenu.removeEventListener('mouseover', cancelLeave);
     rootMenu.remove();
     invoke('set_menu_open', { open: false }).catch(() => {});
   };
 
-  rootMenu.addEventListener('mouseleave', scheduleLeave);
-  rootMenu.addEventListener('mouseover', cancelLeave);
+  // Keep cascading menus open while the pointer travels between panels.
+  // Outside click and Escape remain the explicit dismissal gestures.
   document.addEventListener('pointerdown', onOutside, true);
   document.addEventListener('keydown', onKey, true);
   activeMenuClose = close;
