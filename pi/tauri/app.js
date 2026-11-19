@@ -20,6 +20,16 @@ video.playsInline = true;
 video.autoplay = true;
 pet.appendChild(video);
 
+const statusBubble = document.createElement('div');
+statusBubble.className = 'pet-status-bubble';
+statusBubble.hidden = true;
+const statusTitle = document.createElement('div');
+statusTitle.className = 'pet-status-title';
+const statusDetail = document.createElement('div');
+statusDetail.className = 'pet-status-detail';
+statusBubble.append(statusTitle, statusDetail);
+pet.appendChild(statusBubble);
+
 let config = null;
 let current = '';
 let socket = null;
@@ -323,6 +333,48 @@ function playWorkStatus(state) {
   play(animation, looping);
 }
 
+
+const STATUS_LABELS = {
+  thinking: '思考中',
+  working: '执行中',
+  result: '整理结果',
+  waiting: '等待确认',
+  success: '已完成',
+  error: '发生错误',
+};
+let lastAggregateState = null;
+
+function renderAgentSnapshot(data) {
+  const agents = Array.isArray(data.agents) ? data.agents : [];
+  const aggregate = data.aggregate ?? null;
+  const selected = aggregate?.agent ?? null;
+
+  if (agents.length === 0) {
+    statusBubble.hidden = true;
+  } else {
+    statusBubble.hidden = false;
+    if (selected) {
+      statusTitle.textContent = agents.length + ' 个 Pi 进程 · ' +
+        (selected.project || ('PID ' + selected.pid));
+      const stateLabel = STATUS_LABELS[aggregate.state] ?? '运行中';
+      statusDetail.textContent = stateLabel + (selected.task ? ' · ' + selected.task : '');
+    } else {
+      statusTitle.textContent = agents.length + ' 个 Pi 进程在线';
+      statusDetail.textContent = '当前空闲，等待新的任务';
+    }
+  }
+
+  const nextState = aggregate?.state ?? null;
+  if (nextState !== lastAggregateState) {
+    if (nextState) playWorkStatus(nextState);
+    else {
+      const idle = config?.animations?.idle;
+      if (Array.isArray(idle) && idle.length) play(pick(idle), true);
+    }
+    lastAggregateState = nextState;
+  }
+}
+
 function handleMessage(raw) {
   if (raw === 'shutdown') {
     shuttingDown = true;
@@ -342,6 +394,7 @@ function handleMessage(raw) {
     try {
       const event = JSON.parse(raw);
       if (event.type === 'work_status') playWorkStatus(event.state);
+      else if (event.type === 'agents_snapshot') renderAgentSnapshot(event);
     } catch (error) {
       console.warn('[pi-dsh-pet] invalid event:', error);
     }
