@@ -9,7 +9,10 @@ import { WebSocketServer } from 'ws';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = dirname(dirname(__dirname));
 const PET_ASSETS = join(PACKAGE_ROOT, 'dsh-pet', 'assets');
-const PORT = Number(process.env.PI_DSH_PET_PORT || 39471);
+const configuredPort = Number(process.env.PI_DSH_PET_PORT || 39471);
+const PORT = Number.isInteger(configuredPort) && configuredPort > 1024 && configuredPort <= 65535
+  ? configuredPort
+  : 39471;
 const AGENT_TTL_MS = 16000;
 const IDLE_EXIT_MS = 20000;
 const TERMINAL_VISIBLE_MS = 9000;
@@ -419,6 +422,7 @@ server = createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/health') {
       sendJson(res, 200, {
         ok: true,
+        service: 'pi-dsh-pet-monitor',
         version: 1,
         port: PORT,
         agents: agents.size,
