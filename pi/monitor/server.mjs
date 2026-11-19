@@ -167,7 +167,9 @@ function upsertAgent(input, event = false) {
   const rawState = input.state;
   const state = VALID_STATES.has(rawState) ? rawState : previous?.state ?? 'idle';
   const task = input.task === null ? null : safeText(input.task, 120) || null;
+  const eventType = safeText(input.eventType, 80) || previous?.eventType || 'session_start';
   const stateChanged = !previous || previous.state !== state || previous.task !== task;
+  const eventChanged = !previous || previous.eventType !== eventType;
   const agent = {
     id,
     pid: Number.isInteger(input.pid) ? input.pid : previous?.pid ?? 0,
@@ -175,10 +177,10 @@ function upsertAgent(input, event = false) {
     cwd: safeText(input.cwd, 500) || previous?.cwd || '',
     state,
     task,
-    eventType: event ? safeText(input.eventType, 80) : previous?.eventType ?? 'session_start',
+    eventType,
     registeredAt: previous?.registeredAt ?? now,
     lastSeen: now,
-    updatedAt: event || stateChanged ? now : previous?.updatedAt ?? now,
+    updatedAt: event || stateChanged || eventChanged ? now : previous?.updatedAt ?? now,
   };
   agents.set(id, agent);
   clearIdleExit();
