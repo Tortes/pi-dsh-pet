@@ -31,7 +31,7 @@ fn process_is_running(pid: u32) -> bool {
         let mut exit_code = 0u32;
         let ok = GetExitCodeProcess(handle, &mut exit_code);
         CloseHandle(handle);
-        ok != 0 && exit_code == STILL_ACTIVE
+        ok != 0 && exit_code == STILL_ACTIVE as u32
     }
 }
 
