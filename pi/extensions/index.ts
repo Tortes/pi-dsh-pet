@@ -46,6 +46,7 @@ let waitingTimer: ReturnType<typeof setTimeout> | null = null;
 let turnHadError = false;
 let lastMonitorWarning = 0;
 let monitorQueue: Promise<unknown> = Promise.resolve();
+let legacyMonitorRetirementAttempted = false;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -72,7 +73,8 @@ async function monitorRequest(
 /** Stop the known v1 monitor on its old default port so stale RPC sessions cannot keep respawning a legacy Pet. */
 async function retireLegacyMonitor(): Promise<void> {
   const legacyPort = 39471;
-  if (MONITOR_PORT === legacyPort) return;
+  if (legacyMonitorRetirementAttempted || MONITOR_PORT === legacyPort) return;
+  legacyMonitorRetirementAttempted = true;
   try {
     const base = 'http://127.0.0.1:' + legacyPort;
     const healthResponse = await fetch(base + '/health', { signal: AbortSignal.timeout(800) });
