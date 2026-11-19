@@ -582,7 +582,9 @@ pub fn run() {
     let state = PetState::default();
     let webview_data_dir = prepare_webview_data_dir().unwrap_or_else(|error| {
         eprintln!("[pi-dsh-pet] {error}");
-        std::env::temp_dir().join(format!("pi-dsh-pet-webview-fallback-{}", std::process::id()))
+        let fallback = std::env::temp_dir().join(format!("pi-dsh-pet-webview-fallback-{}", std::process::id()));
+        let _ = fs::create_dir_all(&fallback);
+        fallback
     });
     let _ = append_diagnostic(&format!(
         "runtime starting pid={} port={} webview_data={}",
