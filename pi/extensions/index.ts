@@ -285,14 +285,23 @@ export default function (pi: ExtensionAPI) {
     reportProgress(event.isError ? 'error' : 'result', agentTask, 'tool_execution_end');
   });
 
+  // agent_end can be followed by an automatic retry or compaction. Only agent_settled
+  // is the final completion signal for the whole prompt.
   pi.on('agent_end', (event) => {
-    if (waitingTimer) clearTimeout(waitingTimer);
-    waitingTimer = null;
     const messages = (event as { messages?: Array<{ role?: string; stopReason?: string }> }).messages ?? [];
     const messageError = messages.some((message) =>
       message.role === 'assistant' && ['error', 'aborted', 'length'].includes(message.stopReason ?? ''),
     );
-    reportProgress(turnHadError || messageError ? 'error' : 'success', null, 'agent_end');
+    if (messageError) {
+      turnHadError = true;
+      reportProgress('error', agentTask, 'agent_end_error');
+    }
+  });
+
+  pi.on('agent_settled', () => {
+    if (waitingTimer) clearTimeout(waitingTimer);
+    waitingTimer = null;
+    reportProgress(turnHadError ? 'error' : 'success', null, 'agent_settled');
   });
 
   pi.registerCommand('pet', {
