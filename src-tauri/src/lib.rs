@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, State};
 
 const PET_PADDING: f64 = 20.0;
-const STATUS_BUBBLE_HEIGHT: f64 = 92.0;
+const STATUS_BUBBLE_HEIGHT: f64 = 120.0;
 const GRAVITY_DEFAULT: f64 = 1400.0;
 const RESTITUTION_DEFAULT: f64 = 0.78;
 const FRICTION_DEFAULT: f64 = 2.5;
