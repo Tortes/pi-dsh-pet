@@ -221,7 +221,7 @@ function pruneAgents() {
     }
   }
   refreshPetDesired();
-  if (!petDesired && petProcess) void stopPetRuntime();
+  if (!petDesired && (petProcess || clients.size > 0 || petConnected)) void stopPetRuntime();
   if (changed) {
     broadcastSnapshot();
     if (agents.size === 0) scheduleIdleExit();
@@ -450,6 +450,13 @@ const lastPing = new WeakMap();
 wsServer.on('connection', (ws) => {
   clients.add(ws);
   petConnected = true;
+  if (!petDesired) {
+    // A Pet that survived a monitor crash has no live owner lease; never
+    // silently adopt it as the desired runtime.
+    ws.send('shutdown');
+    ws.close(1000, 'no active Pet lease');
+    return;
+  }
   petEverConnected = true;
   for (const resolve of connectionWaiters) resolve();
   connectionWaiters.clear();
