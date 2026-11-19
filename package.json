@@ -11,7 +11,8 @@
   ],
   "scripts": {
     "pet:dev": "node scripts/create-icon.mjs && tauri dev",
-    "pet:build": "node scripts/create-icon.mjs && tauri build"
+    "pet:build": "node scripts/create-icon.mjs && tauri build",
+    "pet:check": "node --check pi/monitor/server.mjs"
   },
   "pi": {
     "extensions": [
