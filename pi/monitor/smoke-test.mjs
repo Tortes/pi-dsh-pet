@@ -11,7 +11,8 @@ const port = randomInt(42000, 60000);
 const base = 'http://127.0.0.1:' + port;
 const child = spawn(process.execPath, [serverFile], {
   env: { ...process.env, PI_DSH_PET_PORT: String(port) },
-  stdio: 'ignore',
+  detached: true, // POSIX Node detached mode creates a new session (setsid).
+  stdio: ['ignore', 'ignore', 'ignore'],
   windowsHide: true,
 });
 
@@ -57,7 +58,17 @@ async function post(path, body) {
 try {
   const health = await waitForHealth();
   assert.equal(health.service, 'pi-dsh-pet-monitor');
-  assert.equal(health.version, 1);
+  assert.equal(health.version, 2);
+  assert.equal(health.protocolVersion, 2);
+  assert.equal(health.pid, child.pid);
+  assert.ok(health.startedAt > 0);
+
+  if (process.platform === 'linux') {
+    const stat = await (await import('node:fs/promises')).readFile('/proc/' + child.pid + '/stat', 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\\s+/);
+    assert.equal(Number(fields[2]), child.pid, 'detached monitor must own its process group');
+    assert.equal(Number(fields[3]), child.pid, 'detached monitor must be a session leader');
+  }
 
   socket = new WebSocket('ws://127.0.0.1:' + port + '/ws');
   socket.on('message', (raw) => {
@@ -99,6 +110,17 @@ try {
   await post('/agents/register', secondAgent);
   const secondRegistered = await nextSnapshot();
   assert.equal(secondRegistered.agents.length, 2);
+
+  // Pet desired state belongs to explicit owner leases, not a process-global boolean.
+  const firstLease = await post('/pet/lease/acquire', { ownerId: agent.id, size: 'small' });
+  assert.equal(firstLease.desired, true);
+  assert.equal(firstLease.leaseCount, 1);
+  const secondLease = await post('/pet/lease/acquire', { ownerId: secondAgent.id, size: 'large' });
+  assert.equal(secondLease.leaseCount, 2);
+  await post('/pet/lease/release', { ownerId: agent.id });
+  const oneLeaseLeft = await (await fetch(base + '/health')).json();
+  assert.equal(oneLeaseLeft.petDesired, true);
+  assert.equal(oneLeaseLeft.petLeaseCount, 1);
 
   await post('/agents/event', {
     ...agent,
@@ -149,6 +171,9 @@ try {
   await post('/agents/unregister', { id: 'smoke-agent-2' });
   const removed = await nextSnapshot();
   assert.equal(removed.agents.length, 0);
+  const noLeases = await (await fetch(base + '/health')).json();
+  assert.equal(noLeases.petDesired, false);
+  assert.equal(noLeases.petLeaseCount, 0);
 
   console.log('Pi multi-agent monitor smoke test passed');
 } finally {
