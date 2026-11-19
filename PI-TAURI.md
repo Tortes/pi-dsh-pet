@@ -7,7 +7,7 @@ Every Pi process that loads this extension registers with one shared local monit
 1. Each Pi process starts the shared monitor if it is not already running, then registers its PID, project directory, and current Agent state.
 2. Run `/pet` in any registered Pi process. The shared monitor launches the single `pi-dsh-pet.exe` runtime and passes its fixed loopback port and requested size.
 3. Every registered Pi process reports Agent lifecycle and tool-execution events. A heartbeat keeps its registration alive; stale processes are removed automatically.
-4. The monitor broadcasts the full process snapshot, the latest progress event, and an aggregate active count to Pet. Pet reacts to every new progress event with the matching animation and displays the latest process/task in a compact status bubble.
+4. The monitor broadcasts the full process snapshot, the latest progress event, and an aggregate active count to Pet. Pet reacts to every new progress event with the matching animation. Completion and error events are queued in a conversation bubble; each message remains visible for 5 seconds, and the user can click **跳过** to advance. The right-click **Pi 进程状态** action queues a summary followed by one message per registered process.
 5. Run `/pi-status` to list all registered Pi processes and their progress. `/pet-status` shows both Pet connectivity and the process list.
 6. Run `/pet-stop` in any Pi process to close the shared Pet. When the last Pi process unregisters (or its heartbeat expires), the monitor closes Pet and exits after a short grace period.
 7. The monitor listens only on `127.0.0.1` (default port `39471`; override with `PI_DSH_PET_PORT`). If multiple Pi processes start together, the fixed-port bind elects one monitor.
@@ -34,10 +34,10 @@ Animation names are read from `animations.events.workStatus` in `dsh-pet/assets/
 
 ## Context menu
 
-Right-click the visible pet to open a transparent-window HTML context menu.
+Right-click the visible pet to open a transparent-window HTML context menu. The first item, **Pi 进程状态**, queries the shared monitor and reports the online count and each process through the Pet conversation bubble.
 
 - The first-level menu directly lists animation categories (idle, turn, drag, click responses, movement actions, custom categories, and event animation slots); there is no redundant single-item “Actions” wrapper.
-- Hovering a category opens its animation submenu. Panels are positioned in viewport coordinates, flip to the left when needed, avoid overlapping already-open panels, and stay inside the Tauri viewport.
+- Hovering a category opens its animation submenu. Panels are positioned in viewport coordinates, flip to the left when needed, avoid overlapping already-open panels, and stay inside the Tauri viewport. Cascading panels have no horizontal gap and remain open while the pointer travels between them; click outside or press Escape to dismiss, avoiding the fragile diagonal hover corridor used by auto-closing menus.
 - Selecting an animation plays it once, then returns to the configured idle pool.
 - Click outside or press Escape to close.
 - While the menu is open, Pi tells the Rust host to disable click-through for the whole transparent window. Closing the menu restores normal sprite-only hit testing.
