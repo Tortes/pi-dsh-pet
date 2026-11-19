@@ -18,7 +18,7 @@ Do not double-click the Windows executable. It requires the shared monitor port 
 
 ## Agent animation state machine
 
-The extension maps Pi lifecycle events into the six upstream DSH work-status slots. It treats `agent_end` as an intermediate event because an automatic retry or compaction may follow; final completion is reported on `agent_settled`:
+The extension maps Pi lifecycle events into the six upstream DSH work-status slots. It treats `agent_end` as an intermediate event because an automatic retry or compaction may follow; retryable failures do not flash an error, and final completion is reported on `agent_settled` (including its `aborted` flag):
 
 | State | Trigger | Playback |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ The extension maps Pi lifecycle events into the six upstream DSH work-status slo
 | working | tool execution starts | configured loop |
 | result | tool execution completes successfully | configured one-shot |
 | success | `agent_settled` after a run without an error | configured one-shot |
-| error | tool error or final `agent_settled` after an unrecovered agent error | configured one-shot |
+| error | tool error, final unrecovered agent error, or an aborted `agent_settled` | configured one-shot |
 
 Animation names are read from `animations.events.workStatus` in `dsh-pet/assets/config.jsonc`; no animation filenames are hard-coded in the renderer. Missing/invalid status slots are logged and leave the current animation unchanged.
 
