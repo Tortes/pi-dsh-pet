@@ -12,7 +12,7 @@
   "scripts": {
     "pet:dev": "node scripts/create-icon.mjs && tauri dev",
     "pet:build": "node scripts/create-icon.mjs && tauri build",
-    "pet:check": "node --check pi/monitor/server.mjs && node --experimental-strip-types --check pi/extensions/index.ts"
+    "pet:check": "node --check pi/monitor/server.mjs && node --experimental-strip-types --check pi/extensions/index.ts && node pi/monitor/smoke-test.mjs"
   },
   "pi": {
     "extensions": [
