@@ -7,7 +7,7 @@ Every Pi process that loads this extension registers with one shared local monit
 1. Each Pi process starts the shared monitor if it is not already running, then registers its PID, project directory, and current Agent state.
 2. Run `/pet` in any registered Pi process. The shared monitor launches the single `pi-dsh-pet.exe` runtime and passes its fixed loopback port and requested size.
 3. Every registered Pi process reports Agent lifecycle and tool-execution events. A heartbeat keeps its registration alive; stale processes are removed automatically.
-4. The monitor broadcasts the full process snapshot and an aggregate priority state to Pet. Pet plays the corresponding animation and displays the selected process/task in a compact status bubble.
+4. The monitor broadcasts the full process snapshot, the latest progress event, and an aggregate active count to Pet. Pet reacts to every new progress event with the matching animation and displays the latest process/task in a compact status bubble.
 5. Run `/pi-status` to list all registered Pi processes and their progress. `/pet-status` shows both Pet connectivity and the process list.
 6. Run `/pet-stop` in any Pi process to close the shared Pet. When the last Pi process unregisters (or its heartbeat expires), the monitor closes Pet and exits after a short grace period.
 7. The monitor listens only on `127.0.0.1` (default port `39471`; override with `PI_DSH_PET_PORT`). If multiple Pi processes start together, the fixed-port bind elects one monitor.
