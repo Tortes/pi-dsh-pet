@@ -72,7 +72,9 @@ try {
 
   socket = new WebSocket('ws://127.0.0.1:' + port + '/ws');
   socket.on('message', (raw) => {
-    const value = JSON.parse(raw.toString());
+    const message = raw.toString();
+    if (message === 'shutdown' || message === 'pong') return;
+    const value = JSON.parse(message);
     const resolve = waiters.shift();
     if (resolve) resolve(value);
     else queue.push(value);
