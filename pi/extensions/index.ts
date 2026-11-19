@@ -135,6 +135,8 @@ async function registerAgentUnlocked(): Promise<void> {
 }
 
 function registerAgent(): Promise<void> {
+  // Keep retrying even if the monitor is temporarily unavailable during session startup.
+  startHeartbeat();
   return enqueueMonitorOperation(registerAgentUnlocked);
 }
 
