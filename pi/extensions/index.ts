@@ -1,313 +1,476 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import type { Server as HttpServer, ServerResponse } from 'node:http';
-import { createServer } from 'node:http';
-import { stat } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
-import { createReadStream } from 'node:fs';
-import { dirname, join, extname, normalize } from 'node:path';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { randomInt } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const PI_DIR = dirname(dirname(__filename));
 const PACKAGE_ROOT = dirname(PI_DIR);
-const PET_ASSETS = join(PACKAGE_ROOT, 'dsh-pet', 'assets');
-
-const MIME: Record<string, string> = {
-  '.jsonc': 'application/json; charset=utf-8',
-  '.webm': 'video/webm',
+const MONITOR_SERVER = join(PI_DIR, 'monitor', 'server.mjs');
+const MONITOR_PROTOCOL_VERSION = 2;
+const configuredMonitorPort = Number(process.env.PI_DSH_PET_PORT || 39472);
+const MONITOR_PORT = Number.isInteger(configuredMonitorPort) && configuredMonitorPort > 1024 && configuredMonitorPort <= 65535
+  ? configuredMonitorPort
+  : 39472;
+const MONITOR_URL = 'http://127.0.0.1:' + MONITOR_PORT;
+const AGENT_ID = String(process.pid) + '-' + randomUUID();
+const PROJECT = basename(process.cwd()) || 'Pi';
+const PROCESS_INFO = {
+  id: AGENT_ID,
+  pid: process.pid,
+  project: PROJECT,
+  cwd: process.cwd(),
+  startedAt: Date.now(),
 };
 
-let port = 0;
-let server: HttpServer | null = null;
-let broadcast: ((message: string) => void) | null = null;
-let petProcess: ChildProcess | null = null;
-let petConnected = false;
-let connectionWaiters = new Set<() => void>();
-
 const SIZE_MAP: Record<string, number> = { small: 260, normal: 400, large: 540 };
+const STATUS_LABELS: Record<string, string> = {
+  idle: '空闲',
+  thinking: '思考中',
+  working: '执行中',
+  result: '整理结果',
+  waiting: '等待确认',
+  success: '已完成',
+  error: '异常/中止',
+};
 
-function safeAsset(root: string, rel: string): string | undefined {
-  if (!rel || rel.includes('..')) return undefined;
-  const candidate = normalize(join(root, rel));
-  if (!candidate.startsWith(root)) return undefined;
-  return candidate;
+type AgentState = 'idle' | 'thinking' | 'working' | 'result' | 'waiting' | 'success' | 'error';
+
+let agentState: AgentState = 'idle';
+let agentTask: string | null = null;
+let agentEventType = 'session_start';
+let agentRegistered = false;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let waitingTimer: ReturnType<typeof setTimeout> | null = null;
+let turnHadError = false;
+let lastMonitorWarning = 0;
+let monitorQueue: Promise<unknown> = Promise.resolve();
+let legacyMonitorRetirementAttempted = false;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function sendFile(res: ServerResponse, file: string): Promise<void> {
-  try {
-    const info = await stat(file);
-    res.writeHead(200, {
-      'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-      'content-length': info.size,
-      'cache-control': 'public, max-age=3600',
-      'access-control-allow-origin': '*',
-    });
-    createReadStream(file).pipe(res);
-  } catch {
-    res.writeHead(404);
-    res.end('Not found');
-  }
-}
-
-async function startServer(): Promise<number> {
-  if (server?.listening) return port;
-
-  const srv = createServer(async (req, res) => {
-    const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
-
-    if (pathname === '/health') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, port }));
-      return;
-    }
-
-    if (pathname === '/config.jsonc') {
-      await sendFile(res, join(PET_ASSETS, 'config.jsonc'));
-      return;
-    }
-
-    if (pathname.startsWith('/webm/')) {
-      const file = safeAsset(join(PET_ASSETS, 'webm'), pathname.slice('/webm/'.length));
-      if (!file) {
-        res.writeHead(400);
-        res.end('Bad path');
-        return;
-      }
-      await sendFile(res, file);
-      return;
-    }
-
-    res.writeHead(404);
-    res.end('Not found');
+async function monitorRequest(
+  path: string,
+  method: 'GET' | 'POST' = 'GET',
+  body?: Record<string, unknown>,
+): Promise<any> {
+  const response = await fetch(MONITOR_URL + path, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(3000),
   });
-
-  const WebSocketServer = (await import('ws')).WebSocketServer;
-  const wsServer = new WebSocketServer({ noServer: true });
-  const clients = new Set<import('ws').WebSocket>();
-
-  wsServer.on('connection', (ws) => {
-    clients.add(ws);
-    petConnected = true;
-    for (const resolve of connectionWaiters) resolve();
-    connectionWaiters.clear();
-    ws.on('close', () => {
-      clients.delete(ws);
-      petConnected = clients.size > 0;
-    });
-    ws.on('error', () => clients.delete(ws));
-  });
-
-  srv.on('upgrade', (req, socket, head) => {
-    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
-    if (pathname !== '/ws') {
-      socket.destroy();
-      return;
-    }
-    wsServer.handleUpgrade(req, socket, head, (ws) => wsServer.emit('connection', ws, req));
-  });
-
-  for (let i = 0; i < 20; i++) {
-    const candidate = randomInt(10240, 49152);
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const onError = (err: NodeJS.ErrnoException) => {
-          srv.removeListener('listening', onListening);
-          reject(err);
-        };
-        const onListening = () => {
-          srv.removeListener('error', onError);
-          resolve();
-        };
-        srv.once('error', onError);
-        srv.once('listening', onListening);
-        srv.listen(candidate, '127.0.0.1');
-      });
-      port = candidate;
-      server = srv;
-      broadcast = (message) => {
-        for (const ws of clients) {
-          if (ws.readyState === ws.OPEN) ws.send(message);
-        }
-      };
-      return port;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
-    }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    throw new Error(String(data.message ?? 'monitor HTTP ' + response.status));
   }
-
-  throw new Error('could not find a free pet port');
+  return data;
 }
 
-function isWsl(): boolean {
-  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
-  try {
-    return readFileSync('/proc/sys/kernel/osrelease', 'utf8').toLowerCase().includes('microsoft');
-  } catch {
-    return false;
-  }
-}
-
-function findPetExecutable(): string {
-  if (process.env.PI_DSH_PET_BIN) return process.env.PI_DSH_PET_BIN;
-  const windowsRuntime = process.platform === 'win32' || isWsl();
-  const binary = windowsRuntime ? 'pi-dsh-pet.exe' : 'pi-dsh-pet';
-  const candidates = [
-    join(PACKAGE_ROOT, 'pi', 'bin', binary),
-    join(PACKAGE_ROOT, 'src-tauri', 'target', 'release', binary),
-    join(PACKAGE_ROOT, 'src-tauri', 'target', 'debug', binary),
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
-}
-
-function launchPet(size: string): Promise<void> {
-  if (petProcess && petProcess.exitCode === null) return Promise.resolve();
-
-  const exe = findPetExecutable();
-  return new Promise((resolve, reject) => {
-    const child = spawn(exe, [String(port), size], {
-      cwd: PACKAGE_ROOT,
-      stdio: 'ignore',
+/** Stop the known v1 monitor on its old default port so stale RPC sessions cannot keep respawning a legacy Pet. */
+async function listLegacyPetPorts(): Promise<number[]> {
+  return new Promise((resolve) => {
+    const command =
+      '$items = @(Get-CimInstance Win32_Process -Filter "Name=\'pi-dsh-pet.exe\'" | ' +
+      'ForEach-Object { $_.CommandLine }); ConvertTo-Json -InputObject $items -Compress';
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
-    petProcess = child;
-
-    child.once('spawn', () => {
-      child.unref();
-      resolve();
+    let output = '';
+    const finish = (ports: number[]) => {
+      clearTimeout(timer);
+      resolve(ports);
+    };
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      output += chunk;
+      if (output.length > 32768) child.kill();
     });
-    child.once('error', (err) => {
-      if (petProcess === child) petProcess = null;
-      reject(new Error(`Unable to start desktop pet at "${exe}": ${err.message}`));
-    });
-    child.once('exit', (code, signal) => {
-      if (petProcess === child) petProcess = null;
-      petConnected = false;
-      if (code !== 0 && code !== null) {
-        console.error(`[pi-dsh-pet] runtime exited (code=${code}, signal=${signal})`);
+    child.once('error', () => finish([]));
+    child.once('close', (code) => {
+      if (code !== 0 || !output.trim()) return finish([]);
+      try {
+        const value = JSON.parse(output.trim()) as string | string[];
+        const lines = Array.isArray(value) ? value : [value];
+        const ports = lines.flatMap((line) => {
+          const match = String(line).match(/pi-dsh-pet\\.exe"?\\s+(\\d{1,5})\\b/i);
+          if (!match) return [];
+          const port = Number(match[1]);
+          return Number.isInteger(port) && port > 1024 && port <= 65535 ? [port] : [];
+        });
+        finish(ports);
+      } catch {
+        finish([]);
       }
     });
-  });
-}
-
-async function waitForPetConnection(timeoutMs = 15000): Promise<void> {
-  if (petConnected) return;
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      connectionWaiters.delete(onConnected);
-      reject(new Error('Windows pet started but did not connect to Pi. Check WSL localhost forwarding and Windows Firewall.'));
-    }, timeoutMs);
-    const onConnected = () => {
-      clearTimeout(timeout);
-      resolve();
-    };
-    connectionWaiters.add(onConnected);
-  });
-}
-
-async function stopPet(): Promise<void> {
-  const child = petProcess;
-  if (!child || child.exitCode !== null) return;
-
-  // Ask Tauri to close itself first. Fall back to an OS-level kill if it does not.
-  broadcast?.('shutdown');
-  await new Promise<void>((resolve) => {
-    const timeout = setTimeout(resolve, 1200);
-    child.once('exit', () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-  });
-
-  if (child.exitCode === null) {
-    if (process.platform === 'win32') {
-      spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-    } else if (isWsl()) {
-      spawn('taskkill.exe', ['/im', 'pi-dsh-pet.exe', '/t', '/f'], {
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-    } else {
+    const timer = setTimeout(() => {
       child.kill();
+      finish([]);
+    }, 1500);
+  });
+}
+
+/** Retire old supervisors only after positively identifying their monitor protocol. */
+async function retireLegacyMonitor(): Promise<void> {
+  const legacyDefaultPort = 39471;
+  if (legacyMonitorRetirementAttempted || MONITOR_PORT === legacyDefaultPort) return;
+  legacyMonitorRetirementAttempted = true;
+
+  const ports = new Set<number>([legacyDefaultPort, ...await listLegacyPetPorts()]);
+  ports.delete(MONITOR_PORT);
+  for (const port of ports) {
+    try {
+      const base = 'http://127.0.0.1:' + port;
+      const healthResponse = await fetch(base + '/health', { signal: AbortSignal.timeout(700) });
+      if (!healthResponse.ok) continue;
+      const health = await healthResponse.json() as {
+        service?: string; version?: number; protocolVersion?: number;
+      };
+      if (health.service !== 'pi-dsh-pet-monitor' ||
+          (health.protocolVersion ?? health.version) !== 1) continue;
+      await fetch(base + '/pet/stop', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(1500),
+      });
+      console.warn('[pi-dsh-pet] stopped legacy v1 Pet supervisor on port ' + port);
+    } catch {
+      /* This port is not hosting a reachable legacy monitor. */
     }
   }
-  if (petProcess === child) petProcess = null;
-  petConnected = false;
+}
+
+/** Start one detached monitor. Node's detached POSIX spawn creates a new session (setsid). */
+async function ensureMonitor(): Promise<any> {
+  await retireLegacyMonitor();
+  const readHealth = async () => {
+    const health = await monitorRequest('/health');
+    if (health.service !== 'pi-dsh-pet-monitor') {
+      throw new Error('Port ' + MONITOR_PORT + ' is occupied by an unrelated service');
+    }
+    if (health.protocolVersion !== MONITOR_PROTOCOL_VERSION) {
+      throw new Error(
+        'Incompatible Pi Pet monitor on port ' + MONITOR_PORT +
+        ' (protocol ' + String(health.protocolVersion ?? health.version) +
+        ', expected ' + MONITOR_PROTOCOL_VERSION + '). Stop the stale monitor or choose another PI_DSH_PET_PORT.',
+      );
+    }
+    return health;
+  };
+
+  try {
+    return await readHealth();
+  } catch (error) {
+    if (String(error).includes('Incompatible Pi Pet monitor') || String(error).includes('unrelated service')) {
+      throw error;
+    }
+  }
+
+  let spawnError: Error | null = null;
+  const child = spawn(process.execPath, [MONITOR_SERVER], {
+    cwd: PACKAGE_ROOT,
+    detached: true,
+    stdio: ['ignore', 'ignore', 'ignore'],
+    windowsHide: true,
+    env: { ...process.env, PI_DSH_PET_PORT: String(MONITOR_PORT) },
+  });
+  child.once('error', (error) => { spawnError = error; });
+  child.unref();
+
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    await delay(200);
+    try {
+      return await readHealth();
+    } catch (error) {
+      if (String(error).includes('Incompatible Pi Pet monitor') || String(error).includes('unrelated service')) {
+        throw error;
+      }
+    }
+    if (spawnError) throw new Error('Unable to spawn Pi monitor: ' + spawnError.message);
+  }
+  throw new Error('Unable to start the shared Pi monitor on 127.0.0.1:' + MONITOR_PORT +
+    (spawnError ? ': ' + spawnError.message : ''));
+}
+
+function agentPayload() {
+  return {
+    ...PROCESS_INFO,
+    state: agentState,
+    task: agentTask,
+    eventType: agentEventType,
+  };
+}
+
+function enqueueMonitorOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const next = monitorQueue.then(operation, operation) as Promise<T>;
+  monitorQueue = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+function startHeartbeat(): void {
+  if (heartbeatTimer) return;
+  heartbeatTimer = setInterval(() => {
+    void enqueueMonitorOperation(sendHeartbeatUnlocked);
+  }, 5000);
+  heartbeatTimer.unref?.();
+}
+
+async function registerAgentUnlocked(): Promise<void> {
+  await ensureMonitor();
+  await monitorRequest('/agents/register', 'POST', agentPayload());
+  agentRegistered = true;
+  startHeartbeat();
+}
+
+function registerAgent(): Promise<void> {
+  // Keep retrying even if the monitor is temporarily unavailable during session startup.
+  startHeartbeat();
+  return enqueueMonitorOperation(registerAgentUnlocked);
+}
+
+async function sendHeartbeatUnlocked(): Promise<void> {
+  try {
+    await ensureMonitor();
+    await monitorRequest(
+      agentRegistered ? '/agents/heartbeat' : '/agents/register',
+      'POST',
+      agentPayload(),
+    );
+    agentRegistered = true;
+  } catch (error) {
+    const now = Date.now();
+    if (now - lastMonitorWarning > 30000) {
+      lastMonitorWarning = now;
+      console.warn('[pi-dsh-pet] shared monitor heartbeat failed:', String(error));
+    }
+    agentRegistered = false;
+  }
+}
+
+function reportProgress(state: AgentState, task: string | null, eventType: string): void {
+  agentState = state;
+  agentTask = task;
+  agentEventType = eventType;
+  const payload = agentPayload();
+  void enqueueMonitorOperation(async () => {
+    try {
+      await ensureMonitor();
+      await monitorRequest('/agents/event', 'POST', payload);
+      agentRegistered = true;
+      startHeartbeat();
+    } catch (error) {
+      const now = Date.now();
+      if (now - lastMonitorWarning > 30000) {
+        lastMonitorWarning = now;
+        console.warn('[pi-dsh-pet] unable to report Pi progress:', String(error));
+      }
+      agentRegistered = false;
+    }
+  });
+}
+
+function toolTask(event: unknown): string {
+  const value = (event ?? {}) as Record<string, any>;
+  const tool = value.toolName ?? value.name ?? value.tool?.name ?? value.toolCall?.name;
+  const name = typeof tool === 'string' && tool ? tool : '工具';
+  const args = value.args ?? value.input ?? value.arguments ?? value.tool?.arguments ?? value.toolCall?.arguments;
+  if (args && typeof args === 'object') {
+    const target = args.path ?? args.filePath ?? args.file_path ?? args.filename;
+    if (typeof target === 'string' && target) return name + ' · ' + basename(target);
+    if (name === 'bash' && typeof args.command === 'string') {
+      const parts = args.command.trim().split(/[\s|&;]+/).filter(Boolean);
+      const safeCommands = new Set([
+        'git', 'npm', 'pnpm', 'yarn', 'cargo', 'rustc', 'python', 'python3',
+        'pytest', 'node', 'rg', 'fd', 'ls', 'grep', 'make', 'cmake', 'go',
+      ]);
+      if (parts.length && safeCommands.has(parts[0])) {
+        return name + ' · ' + parts.slice(0, 2).join(' ');
+      }
+    }
+  }
+  return name;
+}
+
+function formatAgent(agent: {
+  pid?: number;
+  project?: string;
+  state?: string;
+  task?: string | null;
+}): string {
+  const status = STATUS_LABELS[agent.state ?? 'idle'] ?? agent.state ?? '未知';
+  return 'PID ' + String(agent.pid ?? '?') + ' · ' + String(agent.project ?? 'Pi') +
+    ' · ' + status + (agent.task ? ' · ' + agent.task : '');
+}
+
+async function getMonitorSnapshot(): Promise<{ agents: any[]; petConnected: boolean; petDesired: boolean }> {
+  await registerAgent(); // Re-register after a monitor restart; the local flag cannot prove remote state survived.
+  return monitorRequest('/agents');
+}
+
+function clearLocalTimers(): void {
+  if (waitingTimer) clearTimeout(waitingTimer);
+  waitingTimer = null;
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+}
+
+async function unregisterAgent(): Promise<void> {
+  clearLocalTimers();
+  await enqueueMonitorOperation(async () => {
+    if (!agentRegistered) return;
+    agentRegistered = false;
+    try {
+      await monitorRequest('/agents/unregister', 'POST', { id: AGENT_ID });
+    } catch {
+      /* The monitor may already have exited after the last Pi process closed. */
+    }
+  });
 }
 
 export default function (pi: ExtensionAPI) {
-  const shutdown = () => {
-    void stopPet();
-    server?.close();
-    server = null;
-    broadcast = null;
-    port = 0;
-  };
-
-  process.once('exit', shutdown);
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+  process.once('exit', clearLocalTimers);
 
   pi.on('session_start', async (_event, ctx) => {
     try {
-      await startServer();
+      await registerAgent();
     } catch (error) {
-      ctx.ui.notify('pet server start failed: ' + String(error), 'error');
+      ctx.ui.notify('Pi multi-process monitor failed: ' + String(error), 'error');
     }
   });
 
-  pi.on('agent_start', () => broadcast?.('agent_start'));
+  pi.on('session_shutdown', async () => {
+    await unregisterAgent();
+  });
 
-  pi.on('agent_settled', () => broadcast?.('agent_idle'));
+  pi.on('agent_start', () => {
+    turnHadError = false;
+    reportProgress('thinking', null, 'agent_start');
+  });
 
-  pi.on('turn_start', () => broadcast?.('thinking'));
+  pi.on('turn_start', () => {
+    turnHadError = false;
+    reportProgress('thinking', null, 'turn_start');
+  });
 
-  // Use execution lifecycle events rather than tool_call preflight: blocked or
-  // invalid tool calls should not make the pet look as if work actually started.
+  // A tool request may pause for approval; report waiting only if execution does not start immediately.
+  pi.on('tool_call', (event) => {
+    if (waitingTimer) clearTimeout(waitingTimer);
+    const task = toolTask(event);
+    waitingTimer = setTimeout(() => {
+      waitingTimer = null;
+      reportProgress('waiting', task, 'tool_call');
+    }, 400);
+  });
+
   pi.on('tool_execution_start', (event) => {
-    broadcast?.(JSON.stringify({ type: 'tool_start', tool: event.toolName }));
+    if (waitingTimer) clearTimeout(waitingTimer);
+    waitingTimer = null;
+    reportProgress('working', toolTask(event), 'tool_execution_start');
   });
 
   pi.on('tool_execution_end', (event) => {
-    broadcast?.(JSON.stringify({ type: 'tool_end', tool: event.toolName, error: event.isError }));
+    if (event.isError) turnHadError = true;
+    reportProgress(event.isError ? 'error' : 'result', agentTask, 'tool_execution_end');
+  });
+
+  // agent_end can be followed by an automatic retry or compaction. Only agent_settled
+  // is the final completion signal for the whole prompt.
+  pi.on('agent_end', (event) => {
+    const detail = event as {
+      messages?: Array<{ role?: string; stopReason?: string }>;
+      willRetry?: boolean;
+    };
+    const messageError = (detail.messages ?? []).some((message) =>
+      message.role === 'assistant' && ['error', 'aborted', 'length'].includes(message.stopReason ?? ''),
+    );
+    // A failed intermediate attempt should not flash an error if Pi will retry it.
+    if (messageError && !detail.willRetry) {
+      turnHadError = true;
+      reportProgress('error', agentTask, 'agent_end_error');
+    }
+  });
+
+  pi.on('agent_settled', (event) => {
+    if (waitingTimer) clearTimeout(waitingTimer);
+    waitingTimer = null;
+    const aborted = Boolean((event as { aborted?: boolean }).aborted);
+    reportProgress(
+      turnHadError || aborted ? 'error' : 'success',
+      aborted ? '用户中止' : null,
+      aborted ? 'agent_settled_aborted' : 'agent_settled',
+    );
   });
 
   pi.registerCommand('pet', {
-    description: 'Open the Tauri desktop pet',
+    description: 'Open the shared multi-Pi desktop pet',
     getArgumentCompletions: (prefix) =>
       Object.keys(SIZE_MAP)
         .filter((size) => size.startsWith(prefix))
         .map((size) => ({ value: size, label: size + ' (' + SIZE_MAP[size] + 'px)' })),
     handler: async (args, ctx) => {
       try {
-        await startServer();
+        await registerAgent();
         const requested = (args ?? '').trim().toLowerCase();
         const size = requested in SIZE_MAP ? requested : 'normal';
-        await launchPet(size);
-        await waitForPetConnection();
-        ctx.ui.notify('Windows desktop pet is running (' + size + ')', 'info');
+        await monitorRequest('/pet/start', 'POST', { size, ownerId: AGENT_ID });
+        ctx.ui.notify('Shared Pi Pet is running (' + size + ')', 'info');
       } catch (error) {
-        ctx.ui.notify('pet start failed: ' + String(error), 'error');
+        ctx.ui.notify('Pet start failed: ' + String(error), 'error');
       }
     },
   });
 
   pi.registerCommand('pet-status', {
-    description: 'Check whether the Windows desktop pet is connected',
+    description: 'Check the shared pet and all registered Pi processes',
     handler: async (_args, ctx) => {
-      ctx.ui.notify(petConnected ? 'Pet is connected' : 'Pet is not running', 'info');
+      try {
+        const [health, status] = await Promise.all([ensureMonitor(), getMonitorSnapshot()]);
+        const lines = status.agents.map(formatAgent);
+        ctx.ui.notify(
+          'Pet: ' + (health.petConnected ? 'connected' : health.petDesired ? 'starting' : 'stopped') +
+          '\nPi processes online: ' + status.agents.length +
+          (lines.length ? '\n' + lines.join('\n') : ''),
+          'info',
+        );
+      } catch (error) {
+        ctx.ui.notify('Pi monitor unavailable: ' + String(error), 'error');
+      }
+    },
+  });
+
+  pi.registerCommand('pi-status', {
+    description: 'List progress for every Pi process connected to the shared monitor',
+    handler: async (_args, ctx) => {
+      try {
+        const status = await getMonitorSnapshot();
+        const lines = status.agents.map(formatAgent);
+        ctx.ui.notify(
+          'Pi processes online: ' + status.agents.length +
+          (lines.length ? '\n' + lines.join('\n') : '\nNo Pi process is registered.'),
+          'info',
+        );
+      } catch (error) {
+        ctx.ui.notify('Pi monitor unavailable: ' + String(error), 'error');
+      }
     },
   });
 
   pi.registerCommand('pet-stop', {
-    description: 'Close the Tauri desktop pet',
+    description: 'Close the shared multi-Pi desktop pet',
     handler: async (_args, ctx) => {
-      await stopPet();
-      ctx.ui.notify('Pet closed', 'info');
+      try {
+        await ensureMonitor();
+        await monitorRequest('/pet/stop', 'POST', { ownerId: AGENT_ID, all: true });
+        ctx.ui.notify('Shared Pi Pet closed', 'info');
+      } catch (error) {
+        ctx.ui.notify('Pet stop failed: ' + String(error), 'error');
+      }
     },
   });
 }

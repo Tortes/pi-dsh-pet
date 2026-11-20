@@ -21,14 +21,16 @@
         "focusable": false,
         "resizable": false,
         "skipTaskbar": true,
-        "visible": false
+        "visible": false,
+        "shadow": false
       }
     ],
     "security": {
       "capabilities": [
         "default"
       ]
-    }
+    },
+    "withGlobalTauri": true
   },
   "bundle": {
     "active": true,

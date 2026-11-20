@@ -1,5 +1,9 @@
 name: Tauri
 
+concurrency:
+  group: tauri-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]
@@ -7,6 +11,16 @@ on:
     branches: [main]
 
 jobs:
+  test-monitor-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run pet:check
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -15,6 +29,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install
+      - run: npm run pet:check
       - run: npm run pet:build
       - uses: actions/upload-artifact@v4
         with:
